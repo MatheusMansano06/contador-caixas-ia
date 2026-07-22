@@ -1,7 +1,23 @@
 # Contador de Caixas com IA por Camera
 
 Data de criacao: 22 de julho de 2026
-Status atual: planejamento e estrutura inicial, sem implementacao de codigo ainda.
+Status atual: MVP ao vivo em desenvolvimento inicial.
+
+Implementacao inicial criada:
+
+- backend local com FastAPI;
+- painel web operacional;
+- captura ao vivo por webcam USB ou camera IP/RTSP;
+- detector local inicial baseado em movimento e contornos;
+- tracking por centroide;
+- contagem por linha virtual;
+- persistencia local em SQLite.
+
+Para rodar a primeira versao, veja:
+
+```text
+04_backend_api_contagem/README.md
+```
 
 ## 1. Resumo do projeto
 

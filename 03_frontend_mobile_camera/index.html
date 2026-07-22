@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Contador de Caixas IA</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="video-area" aria-label="Video ao vivo">
+        <div class="video-toolbar">
+          <div>
+            <p class="label">Sessao</p>
+            <h1>Contador ao vivo</h1>
+          </div>
+          <div class="status-chip" id="runningStatus">parado</div>
+        </div>
+
+        <div class="video-frame">
+          <img id="stream" alt="Fluxo da camera com contagem" />
+          <div class="empty-video" id="emptyVideo">
+            <strong>Camera aguardando</strong>
+            <span>Inicie uma sessao para abrir o fluxo ao vivo.</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="control-panel" aria-label="Controles de contagem">
+        <section class="metric-strip">
+          <div>
+            <span>Total</span>
+            <strong id="totalCount">0</strong>
+          </div>
+          <div>
+            <span>FPS</span>
+            <strong id="fpsValue">0.0</strong>
+          </div>
+          <div>
+            <span>Objetos</span>
+            <strong id="trackCount">0</strong>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <h2>Camera</h2>
+          <label class="field">
+            <span>Fonte</span>
+            <input id="cameraSource" value="0" autocomplete="off" />
+          </label>
+          <div class="button-row">
+            <button id="startButton" class="primary-button" type="button">Iniciar</button>
+            <button id="stopButton" class="secondary-button" type="button">Parar</button>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <h2>Linha virtual</h2>
+          <div class="line-grid">
+            <label>
+              <span>X1</span>
+              <input id="x1" type="range" min="0" max="1" step="0.01" value="0.10" />
+            </label>
+            <label>
+              <span>Y1</span>
+              <input id="y1" type="range" min="0" max="1" step="0.01" value="0.55" />
+            </label>
+            <label>
+              <span>X2</span>
+              <input id="x2" type="range" min="0" max="1" step="0.01" value="0.90" />
+            </label>
+            <label>
+              <span>Y2</span>
+              <input id="y2" type="range" min="0" max="1" step="0.01" value="0.55" />
+            </label>
+          </div>
+          <button id="lineButton" class="secondary-button full-width" type="button">Atualizar linha</button>
+        </section>
+
+        <section class="panel-section">
+          <h2>Estado</h2>
+          <dl class="state-list">
+            <div>
+              <dt>Sessao</dt>
+              <dd id="sessionId">-</dd>
+            </div>
+            <div>
+              <dt>Resolucao</dt>
+              <dd id="resolution">-</dd>
+            </div>
+            <div>
+              <dt>Erro</dt>
+              <dd id="errorMessage">-</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel-section">
+          <h2>Historico local</h2>
+          <div class="history-list" id="historyList"></div>
+        </section>
+      </aside>
+    </main>
+
+    <script src="/static/app.js" type="module"></script>
+  </body>
+</html>
