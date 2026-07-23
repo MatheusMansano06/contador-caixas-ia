@@ -22,7 +22,7 @@ def require_cv2():
 class MotionBoxDetector:
     """Detector local inicial baseado em movimento e contornos."""
 
-    def __init__(self, min_area: int = 1600) -> None:
+    def __init__(self, min_area: int = 6000) -> None:
         cv2 = require_cv2()
         self.cv2 = cv2
         self.min_area = min_area

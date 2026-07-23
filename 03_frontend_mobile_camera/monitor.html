@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Monitor - Contador de Caixas IA</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 0; font-family: Arial, sans-serif; background: #1a1a1a; color: #fff; overflow: hidden; }
+      .container { display: grid; grid-template-columns: 1fr 340px; gap: 16px; height: 100vh; padding: 16px; }
+      .video-section { background: #000; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+      .video-display { flex: 1; background: #000; position: relative; display: flex; align-items: center; justify-content: center; min-height: 0; overflow: hidden; }
+      #stream { max-width: 100%; max-height: 100%; object-fit: contain; display: none; }
+      .placeholder { text-align: center; color: #666; }
+      #drawOverlay { position: absolute; inset: 0; cursor: crosshair; display: none; z-index: 5; }
+      #drawOverlay.active { display: block; }
+      #roiRect { position: absolute; border: 2px dashed #0d7f66; background: rgba(13,127,102,0.15); display: none; pointer-events: none; }
+      .draw-hint { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: rgba(13,127,102,0.95); padding: 8px 16px; border-radius: 4px; font-size: 0.9rem; z-index: 6; display: none; }
+      .draw-hint.show { display: block; }
+      .video-info { padding: 10px 12px; background: #222; border-top: 1px solid #444; display: flex; gap: 20px; }
+      .info-item { font-size: 0.85rem; }
+      .info-label { color: #999; }
+      .info-value { font-weight: bold; }
+      .sidebar { background: #222; border-radius: 8px; padding: 16px; display: grid; gap: 14px; grid-auto-rows: max-content; overflow-y: auto; }
+      .card { background: #1a1a1a; padding: 14px; border-radius: 4px; border: 1px solid #444; }
+      .card-title { font-size: 0.8rem; color: #999; text-transform: uppercase; margin-bottom: 8px; }
+      .big-number { font-size: 3rem; font-weight: 900; line-height: 1; color: #0d7f66; }
+      .stat { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .stat-box { background: #333; padding: 8px; text-align: center; border-radius: 4px; }
+      .stat-box-label { font-size: 0.7rem; color: #999; }
+      .stat-box-value { font-size: 1.3rem; font-weight: bold; }
+      .btn { width: 100%; padding: 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.9rem; margin-top: 8px; color: #fff; }
+      .btn-green { background: #0d7f66; }
+      .btn-green:hover { background: #075946; }
+      .btn-blue { background: #2563a8; }
+      .btn-blue:hover { background: #1d4e85; }
+      .btn-gray { background: #555; }
+      .btn-gray:hover { background: #444; }
+      .session-list { max-height: 200px; overflow-y: auto; }
+      .session-item { padding: 6px 0; border-bottom: 1px solid #444; font-size: 0.8rem; }
+      .session-id { color: #0d7f66; font-weight: bold; }
+      .session-meta { color: #999; font-size: 0.72rem; }
+      .status-online { color: #0d7f66; }
+      .status-offline { color: #b54708; }
+      .zone-status { font-size: 0.8rem; color: #999; margin-top: 6px; }
+      @media (max-width: 1024px) {
+        .container { grid-template-columns: 1fr; height: auto; overflow: auto; }
+        body { overflow: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="video-section">
+        <div class="video-display" id="videoDisplay">
+          <div class="placeholder" id="placeholder">
+            <div style="font-size: 1.2rem; margin-bottom: 8px;">Aguardando câmera...</div>
+            <div style="font-size: 0.9rem;">Inicie a câmera no celular</div>
+          </div>
+          <img id="stream" alt="Transmissão" />
+          <div class="draw-hint" id="drawHint">Arraste sobre a imagem para marcar a área</div>
+          <div id="drawOverlay">
+            <div id="roiRect"></div>
+          </div>
+        </div>
+        <div class="video-info">
+          <div class="info-item"><span class="info-label">Status:</span> <span class="info-value" id="status"><span class="status-offline">Offline</span></span></div>
+          <div class="info-item"><span class="info-label">Resolução:</span> <span class="info-value" id="resolution">-</span></div>
+          <div class="info-item"><span class="info-label">FPS:</span> <span class="info-value" id="fps">0.0</span></div>
+        </div>
+      </div>
+
+      <div class="sidebar">
+        <div class="card">
+          <div class="card-title">Caixas contadas (total)</div>
+          <div class="big-number" id="total">0</div>
+          <div style="font-size:0.78rem; color:#999; margin-bottom:8px;">Visíveis agora: <span id="visible">0</span></div>
+          <button class="btn" id="resetBtn" style="background:#b54708;">Zerar contagem</button>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Área de contagem</div>
+          <button class="btn btn-green" id="defineZoneBtn">✏️ Definir área</button>
+          <button class="btn btn-blue" id="calibrateBtn">🔄 Recalibrar (área vazia)</button>
+          <button class="btn btn-gray" id="clearZoneBtn">🗑️ Remover área</button>
+          <button class="btn btn-gray" id="rotateBtn">↻ Girar imagem (90°)</button>
+          <div class="zone-status" id="zoneStatus">Nenhuma área definida.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Sessão</div>
+          <div class="stat">
+            <div class="stat-box">
+              <div class="stat-box-label">Objetos</div>
+              <div class="stat-box-value" id="tracks">0</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-box-label">ID</div>
+              <div class="stat-box-value" id="sessionId" style="font-size: 1rem;">-</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Histórico</div>
+          <div class="session-list" id="sessionList"><div class="session-item" style="color:#999;">Carregando...</div></div>
+          <button class="btn btn-gray" id="refreshBtn">Atualizar</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const el = (id) => document.getElementById(id);
+      const stream = el("stream"), placeholder = el("placeholder");
+      const drawOverlay = el("drawOverlay"), roiRect = el("roiRect"), drawHint = el("drawHint");
+      const videoDisplay = el("videoDisplay");
+      const statusEl = el("status"), resolution = el("resolution"), fps = el("fps");
+      const total = el("total"), tracks = el("tracks"), sessionId = el("sessionId");
+      const zoneStatus = el("zoneStatus"), sessionList = el("sessionList");
+
+      let streaming = false;
+      let drawing = false;
+      let startPt = null;
+      let hasZone = false;
+      let lastSessionId = null;
+
+      // ---- Stream ----
+      function startStream(force) {
+        if (streaming && !force) return;
+        stream.src = "/api/stream?t=" + Date.now();
+        stream.style.display = "block";
+        placeholder.style.display = "none";
+        streaming = true;
+      }
+      function stopStream() {
+        stream.removeAttribute("src");
+        stream.style.display = "none";
+        placeholder.style.display = "block";
+        streaming = false;
+      }
+      stream.onerror = () => { streaming = false; };
+
+      // ---- Mapear coordenadas de tela -> relativas (0-1) na imagem, considerando object-fit contain ----
+      function imageRect() {
+        const r = stream.getBoundingClientRect();
+        const nw = stream.naturalWidth, nh = stream.naturalHeight;
+        if (!nw || !nh) return null;
+        const scale = Math.min(r.width / nw, r.height / nh);
+        const rw = nw * scale, rh = nh * scale;
+        return { ox: r.left + (r.width - rw) / 2, oy: r.top + (r.height - rh) / 2, rw, rh };
+      }
+      function toRelative(clientX, clientY) {
+        const ir = imageRect();
+        if (!ir) return null;
+        return {
+          x: Math.min(1, Math.max(0, (clientX - ir.ox) / ir.rw)),
+          y: Math.min(1, Math.max(0, (clientY - ir.oy) / ir.rh)),
+        };
+      }
+
+      // ---- Desenhar área ----
+      el("defineZoneBtn").addEventListener("click", () => {
+        if (!streaming) { alert("Inicie a câmera no celular primeiro."); return; }
+        drawOverlay.classList.add("active");
+        drawHint.classList.add("show");
+      });
+
+      drawOverlay.addEventListener("mousedown", (e) => {
+        drawing = true;
+        startPt = { x: e.clientX, y: e.clientY };
+        const dr = videoDisplay.getBoundingClientRect();
+        roiRect.style.left = (e.clientX - dr.left) + "px";
+        roiRect.style.top = (e.clientY - dr.top) + "px";
+        roiRect.style.width = "0px";
+        roiRect.style.height = "0px";
+        roiRect.style.display = "block";
+      });
+      drawOverlay.addEventListener("mousemove", (e) => {
+        if (!drawing) return;
+        const dr = videoDisplay.getBoundingClientRect();
+        const x = Math.min(startPt.x, e.clientX) - dr.left;
+        const y = Math.min(startPt.y, e.clientY) - dr.top;
+        roiRect.style.left = x + "px";
+        roiRect.style.top = y + "px";
+        roiRect.style.width = Math.abs(e.clientX - startPt.x) + "px";
+        roiRect.style.height = Math.abs(e.clientY - startPt.y) + "px";
+      });
+      drawOverlay.addEventListener("mouseup", async (e) => {
+        if (!drawing) return;
+        drawing = false;
+        drawOverlay.classList.remove("active");
+        drawHint.classList.remove("show");
+        roiRect.style.display = "none";
+
+        const p1 = toRelative(startPt.x, startPt.y);
+        const p2 = toRelative(e.clientX, e.clientY);
+        if (!p1 || !p2 || Math.abs(p2.x - p1.x) < 0.03 || Math.abs(p2.y - p1.y) < 0.03) {
+          alert("Área muito pequena. Arraste um retângulo maior.");
+          return;
+        }
+        await fetch("/api/zone", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }),
+        });
+        hasZone = true;
+        zoneStatus.textContent = "Área definida. Deixe a área VAZIA e clique em Recalibrar.";
+      });
+
+      el("calibrateBtn").addEventListener("click", async () => {
+        await fetch("/api/zone/calibrate", { method: "POST" });
+        zoneStatus.textContent = "Área recalibrada com o fundo vazio. Pode começar a colocar produtos.";
+      });
+      el("clearZoneBtn").addEventListener("click", async () => {
+        await fetch("/api/zone/clear", { method: "POST" });
+        hasZone = false;
+        zoneStatus.textContent = "Nenhuma área definida.";
+      });
+      el("rotateBtn").addEventListener("click", async () => {
+        await fetch("/api/rotate", { method: "POST" });
+      });
+      el("resetBtn").addEventListener("click", async () => {
+        await fetch("/api/reset", { method: "POST" });
+        total.textContent = "0";
+      });
+
+      // ---- Status ----
+      async function updateStatus() {
+        try {
+          const res = await fetch("/api/status");
+          const d = await res.json();
+          statusEl.innerHTML = d.running ? '<span class="status-online">Online</span>' : '<span class="status-offline">Offline</span>';
+          resolution.textContent = d.frame_width ? d.frame_width + "x" + d.frame_height : "-";
+          fps.textContent = (d.fps || 0).toFixed(1);
+          total.textContent = d.total || 0;
+          el("visible").textContent = d.visible || 0;
+          tracks.textContent = d.tracks || 0;
+          sessionId.textContent = d.session_id || "-";
+          if (d.running) {
+            // Sessão nova (ou reiniciada) -> reconecta o stream para não ficar preto.
+            if (d.session_id !== lastSessionId) {
+              startStream(true);
+              lastSessionId = d.session_id;
+            } else {
+              startStream(false);
+            }
+          } else {
+            stopStream();
+            lastSessionId = null;
+          }
+        } catch (e) { /* servidor ocupado */ }
+      }
+
+      async function loadSessions() {
+        try {
+          const res = await fetch("/api/sessions?limit=8");
+          const s = await res.json();
+          sessionList.innerHTML = s.length
+            ? s.map((x) => `<div class="session-item"><span class="session-id">#${x.id}</span> • <span class="session-meta">${x.started_at}</span></div>`).join("")
+            : '<div class="session-item" style="color:#999;">Nenhuma sessão</div>';
+        } catch (e) {}
+      }
+
+      el("refreshBtn").addEventListener("click", loadSessions);
+
+      updateStatus();
+      loadSessions();
+      setInterval(updateStatus, 800);
+    </script>
+  </body>
+</html>

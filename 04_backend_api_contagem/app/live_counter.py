@@ -5,9 +5,12 @@ import time
 from dataclasses import asdict
 from typing import Any
 
+import numpy as np
+
 from .counter import CentroidTracker, CountLine, LineCrossingCounter
 from .database import SessionStore
 from .vision import MotionBoxDetector, draw_overlay, require_cv2
+from .zone import ZoneMonitor, draw_zone_overlay
 
 
 class LiveCounterService:
@@ -18,6 +21,12 @@ class LiveCounterService:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._last_jpeg: bytes | None = None
+        self._last_raw = None  # ultimo frame sem overlay (para testar/rodar IA)
+        self._detector: MotionBoxDetector | None = None
+        self._tracker: CentroidTracker | None = None
+        self._counter: LineCrossingCounter | None = None
+        self._zone = ZoneMonitor()
+        self._rotation = 0  # 0, 90, 180, 270
         self._status: dict[str, Any] = {
             "running": False,
             "session_id": None,
@@ -38,6 +47,9 @@ class LiveCounterService:
 
             self._stop_event.clear()
             self._last_jpeg = None
+            self._detector = None
+            self._tracker = None
+            self._counter = None
             session_id = self.store.create_session(source=source, line_config=asdict(self.line))
             self._status.update(
                 {
@@ -51,6 +63,9 @@ class LiveCounterService:
                     "error": None,
                 }
             )
+            # Modo "client": frames vêm do celular via /api/frame, sem thread de captura local.
+            if source == "client":
+                return self.status()
             self._thread = threading.Thread(target=self._run, args=(source, session_id), daemon=True)
             self._thread.start()
             return self.status()
@@ -75,13 +90,129 @@ class LiveCounterService:
             self.line = line
             return self.status()
 
+    def reset_count(self) -> dict[str, Any]:
+        with self._lock:
+            if self._counter is not None:
+                self._counter.reset()
+            if self._tracker is not None:
+                self._tracker.tracks.clear()
+            self._zone.reset_total()
+            self._status["total"] = 0
+            session_id = self._status["session_id"]
+            if session_id is not None:
+                self.store.update_total(int(session_id), 0)
+            return self.status()
+
+    def set_zone(self, x1: float, y1: float, x2: float, y2: float) -> dict[str, Any]:
+        with self._lock:
+            self._zone.set_roi(x1, y1, x2, y2)
+            self._status["total"] = 0
+            return self.status()
+
+    def clear_zone(self) -> dict[str, Any]:
+        with self._lock:
+            self._zone.clear()
+            self._status["total"] = 0
+            return self.status()
+
+    def recalibrate_zone(self) -> dict[str, Any]:
+        with self._lock:
+            self._zone.recalibrate()
+            return self.status()
+
+    def cycle_rotation(self) -> dict[str, Any]:
+        with self._lock:
+            self._rotation = (self._rotation + 90) % 360
+            # A imagem mudou de orientacao: a area/fundo precisam recalibrar.
+            self._zone.recalibrate()
+            return self.status()
+
     def status(self) -> dict[str, Any]:
         with self._lock:
-            return {**self._status, "line": asdict(self.line)}
+            return {**self._status, "line": asdict(self.line), "rotation": self._rotation}
 
     def snapshot(self) -> bytes | None:
         with self._lock:
             return self._last_jpeg
+
+    def process_frame(self, frame_data: bytes) -> dict[str, Any]:
+        """Processa um frame enviado do cliente (câmera móvel)."""
+        cv2 = require_cv2()
+
+        if not self._status["running"]:
+            return {"error": "Nenhuma sessão ativa"}
+
+        try:
+            nparr = np.frombuffer(frame_data, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                return {"error": "Frame inválido"}
+
+            rotation = self._rotation
+            if rotation == 90:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            elif rotation == 180:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+            elif rotation == 270:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+            session_id = self._status["session_id"]
+            frame_height, frame_width = frame.shape[:2]
+            with self._lock:
+                self._last_raw = frame.copy()
+
+            # Modo vigia de area: conta objetos deixados/parados dentro da ROI.
+            if self._zone.active:
+                with self._lock:
+                    result = self._zone.process(frame)
+                if result is not None:
+                    overlay = draw_zone_overlay(frame, result)
+                    _, encoded = cv2.imencode(".jpg", overlay, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+                    count = int(result["count"])
+                    visible = int(result.get("visible", 0))
+                    with self._lock:
+                        self._last_jpeg = encoded.tobytes()
+                        prev_total = self._status["total"]
+                        self._status.update(
+                            {
+                                "total": count,
+                                "visible": visible,
+                                "frame_width": frame_width,
+                                "frame_height": frame_height,
+                                "detections": len(result.get("boxes", [])),
+                                "tracks": len(result.get("boxes", [])),
+                            }
+                        )
+                    if session_id is not None and count != prev_total:
+                        self.store.update_total(session_id, count)
+                    return {"total": count, "visible": visible, "tracks": len(result.get("boxes", [])),
+                            "frame_width": frame_width, "frame_height": frame_height}
+
+            # Sem area definida: apenas transmite a imagem, sem contar nada.
+            cv2.putText(
+                frame,
+                "Desenhe a area de contagem no computador",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (60, 160, 255),
+                2,
+            )
+            _, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+            with self._lock:
+                self._last_jpeg = encoded.tobytes()
+                self._status.update(
+                    {
+                        "total": 0,
+                        "frame_width": frame_width,
+                        "frame_height": frame_height,
+                        "detections": 0,
+                        "tracks": 0,
+                    }
+                )
+            return {"total": 0, "tracks": 0, "frame_width": frame_width, "frame_height": frame_height}
+        except Exception as exc:
+            return {"error": str(exc)}
 
     def _run(self, source: str, session_id: int) -> None:
         cv2 = require_cv2()

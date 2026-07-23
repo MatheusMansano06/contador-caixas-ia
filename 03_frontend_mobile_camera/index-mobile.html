@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <title>Contador de Caixas IA</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 0; font-family: Arial, sans-serif; background: #222; color: #fff; }
+      .container { display: flex; flex-direction: column; height: 100vh; }
+      .header { background: #1a1a1a; padding: 12px; border-bottom: 1px solid #444; display: flex; justify-content: space-between; align-items: center; }
+      .header h1 { margin: 0; font-size: 1rem; }
+      .status { padding: 4px 8px; background: #0d7f66; border-radius: 3px; font-size: 0.8rem; }
+      .camera-area { flex: 1; background: #000; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+      video { width: 100%; height: 100%; object-fit: contain; display: block; }
+      .rotate-hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); background: rgba(37,99,168,0.95); color: #fff; padding: 8px 14px; border-radius: 4px; font-size: 0.82rem; text-align: center; z-index: 5; }
+      .counter-box { position: absolute; top: 12px; right: 12px; background: rgba(13, 127, 102, 0.9); padding: 12px 16px; border-radius: 4px; text-align: center; }
+      .counter-label { font-size: 0.7rem; opacity: 0.8; }
+      .counter-value { font-size: 2.2rem; font-weight: bold; line-height: 1; }
+      .info-box { position: absolute; top: 12px; left: 12px; background: rgba(0, 0, 0, 0.8); padding: 8px 12px; border-radius: 4px; font-size: 0.9rem; }
+      .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; background: #1a1a1a; border-top: 1px solid #444; }
+      button { padding: 12px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 1rem; }
+      .btn-start { background: #0d7f66; color: white; }
+      .btn-stop { background: #666; color: white; }
+      button:active { opacity: 0.7; }
+      .panel { position: fixed; bottom: 0; right: 0; width: 100%; max-width: 360px; background: #1a1a1a; border-left: 1px solid #444; max-height: 0; overflow-y: auto; transition: max-height 0.3s; z-index: 1000; }
+      .panel.open { max-height: 70vh; }
+      .panel-header { padding: 12px; border-bottom: 1px solid #444; font-weight: bold; display: flex; justify-content: space-between; }
+      .panel-content { padding: 12px; display: grid; gap: 12px; }
+      .section { display: grid; gap: 8px; }
+      .section h3 { margin: 0; font-size: 0.8rem; color: #999; text-transform: uppercase; }
+      .stat-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .stat { background: #333; padding: 8px; text-align: center; border-radius: 4px; }
+      .stat-val { font-size: 1.4rem; font-weight: bold; }
+      .field { display: grid; gap: 4px; }
+      .field label { font-size: 0.75rem; color: #999; }
+      input[type="range"] { width: 100%; }
+      .toggle-btn { position: fixed; bottom: 16px; right: 16px; width: 48px; height: 48px; border-radius: 50%; background: #0d7f66; border: none; color: white; cursor: pointer; font-size: 1.2rem; z-index: 999; }
+      .error-msg { padding: 8px; background: rgba(181, 71, 8, 0.3); border-left: 3px solid #b54708; color: #ff9966; font-size: 0.85rem; margin-top: 8px; }
+      @media (min-width: 768px) {
+        .toggle-btn { display: none; }
+        .panel { position: static; max-width: none; max-height: none; }
+        .container { flex-direction: row; }
+        .controls { grid-column: 1 / -1; order: -1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>Contador de Caixas</h1>
+        <div class="status" id="status">Parado</div>
+      </div>
+
+      <div class="camera-area">
+        <video id="video" playsinline autoplay muted></video>
+        <div class="info-box" id="info">Iniciando...</div>
+        <div class="rotate-hint" id="rotateHint">📱↔️ Vire o celular na horizontal para capturar mais espaço</div>
+        <div class="counter-box">
+          <div class="counter-label">TOTAL</div>
+          <div class="counter-value" id="total">0</div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="btn-start" id="btnStart">Iniciar</button>
+        <button class="btn-stop" id="btnStop">Parar</button>
+      </div>
+
+      <div class="panel" id="panel">
+        <div class="panel-header">
+          Controles
+          <button style="background:none; border:none; color:#999; font-size:1.2rem; cursor:pointer;" id="closePanel">✕</button>
+        </div>
+        <div class="panel-content">
+          <div class="section">
+            <h3>Sessão</h3>
+            <div class="stat-row">
+              <div class="stat">
+                <div class="stat-val" id="fps">0.0</div>
+                <div style="font-size:0.7rem; color:#999;">FPS</div>
+              </div>
+              <div class="stat">
+                <div class="stat-val" id="tracks">0</div>
+                <div style="font-size:0.7rem; color:#999;">Objetos</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>Imagem</h3>
+            <button style="width:100%; background:#2563a8; color:#fff;" id="btnRotate">🔄 Girar imagem (90°)</button>
+            <div style="font-size:0.78rem; color:#999;">Use se a imagem estiver deitada ou de cabeça pra baixo no computador.</div>
+          </div>
+
+          <div class="section" id="errorDiv"></div>
+        </div>
+      </div>
+
+      <button class="toggle-btn" id="togglePanel">⚙</button>
+    </div>
+
+    <script>
+      const video = document.getElementById("video");
+      const btnStart = document.getElementById("btnStart");
+      const btnStop = document.getElementById("btnStop");
+      const togglePanel = document.getElementById("togglePanel");
+      const closePanel = document.getElementById("closePanel");
+      const panel = document.getElementById("panel");
+      const status = document.getElementById("status");
+      const info = document.getElementById("info");
+      const total = document.getElementById("total");
+      const fps = document.getElementById("fps");
+      const tracks = document.getElementById("tracks");
+      const errorDiv = document.getElementById("errorDiv");
+
+      const savedRotation = parseInt(localStorage.getItem("rotation") || "0", 10);
+      let state = { running: false, sessionId: null, frameCount: 0, lastTime: Date.now(), fps: 0, rotation: savedRotation, sending: false };
+      let canvas = document.createElement("canvas");
+      let ctx = canvas.getContext("2d");
+
+      const rotateHint = document.getElementById("rotateHint");
+      const btnRotate = document.getElementById("btnRotate");
+
+      btnStart.addEventListener("click", start);
+      btnStop.addEventListener("click", stop);
+      btnRotate.addEventListener("click", async () => {
+        try {
+          const res = await fetch("/api/rotate", { method: "POST" });
+          const d = await res.json();
+          info.textContent = "Rotação: " + (d.rotation || 0) + "°";
+        } catch (e) {
+          showError("Erro ao girar: " + e.message);
+        }
+      });
+      togglePanel.addEventListener("click", () => panel.classList.add("open"));
+      closePanel.addEventListener("click", () => panel.classList.remove("open"));
+
+      // Esconde a dica quando o celular já está deitado (horizontal).
+      function checkOrientation() {
+        const landscape = window.innerWidth > window.innerHeight;
+        rotateHint.style.display = landscape ? "none" : "block";
+      }
+      window.addEventListener("resize", checkOrientation);
+      window.addEventListener("orientationchange", () => setTimeout(checkOrientation, 300));
+      checkOrientation();
+
+      async function start() {
+        showError("");
+        try {
+          const res = await fetch("/api/start", { method: "POST", body: JSON.stringify({ source: "client" }), headers: { "Content-Type": "application/json" } });
+          const data = await res.json();
+          if (data.session_id) {
+            state.running = true;
+            state.sessionId = data.session_id;
+            status.textContent = "Rodando";
+            info.textContent = "Solicitando câmera...";
+
+            try {
+              const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 }, aspectRatio: { ideal: 16 / 9 } }, audio: false });
+              video.srcObject = stream;
+              info.textContent = "Câmera ativa";
+              loop();
+            } catch (e) {
+              showError("Permissão de câmera negada: " + e.message);
+              state.running = false;
+            }
+          }
+        } catch (e) {
+          showError("Erro ao iniciar: " + e.message);
+        }
+      }
+
+      async function stop() {
+        state.running = false;
+        try {
+          await fetch("/api/stop", { method: "POST" });
+          video.srcObject?.getTracks().forEach(t => t.stop());
+          status.textContent = "Parado";
+          info.textContent = "Encerrado";
+        } catch (e) {
+          showError("Erro ao parar: " + e.message);
+        }
+      }
+
+      async function loop() {
+        if (!state.running) return;
+
+        // Envia 1 frame por vez (espera a resposta) para não acumular e travar.
+        if (!state.sending && video.readyState === video.HAVE_ENOUGH_DATA) {
+          state.sending = true;
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+
+          canvas.toBlob((blob) => {
+            if (!blob) { state.sending = false; return; }
+            const reader = new FileReader();
+            reader.onloadend = async () => {
+              try {
+                const res = await fetch("/api/frame", { method: "POST", body: JSON.stringify({ data: reader.result }), headers: { "Content-Type": "application/json" } });
+                if (res.ok) {
+                  const r = await res.json();
+                  total.textContent = r.total || 0;
+                  tracks.textContent = r.tracks || 0;
+                  state.frameCount++;
+                  const now = Date.now();
+                  const elapsed = (now - state.lastTime) / 1000;
+                  if (elapsed >= 1) {
+                    fps.textContent = (state.frameCount / elapsed).toFixed(1);
+                    state.frameCount = 0;
+                    state.lastTime = now;
+                  }
+                }
+              } catch (e) {
+                console.error(e);
+              }
+              state.sending = false;
+            };
+            reader.readAsDataURL(blob);
+          }, "image/jpeg", 0.5);
+        }
+
+        // Ritmo alvo ~8 quadros/segundo (suave e sem travar).
+        setTimeout(loop, 120);
+      }
+
+      function showError(msg) {
+        errorDiv.innerHTML = msg ? `<div class="error-msg">${msg}</div>` : "";
+      }
+    </script>
+  </body>
+</html>

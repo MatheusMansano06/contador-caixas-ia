@@ -10,3 +10,18 @@ venv/
 !05_ia_visao_computacional/modelos/.gitkeep
 05_ia_visao_computacional/datasets/*
 !05_ia_visao_computacional/datasets/.gitkeep
+
+# Modelos de IA baixados/treinados (grandes) em qualquer lugar
+*.pt
+*.onnx
+*.engine
+*.cache
+
+# Saidas de treino Ultralytics
+runs/
+
+# Ferramentas e temporarios
+ngrok.exe
+*.log
+*.tmp
+Thumbs.db

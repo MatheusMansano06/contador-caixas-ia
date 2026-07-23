@@ -25,6 +25,7 @@ class Track:
     previous_centroid: tuple[int, int] | None = None
     missed_frames: int = 0
     counted: bool = False
+    age: int = 0
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ class CentroidTracker:
             track.previous_centroid = track.centroid
             track.centroid = detections[detection_index].centroid
             track.missed_frames = 0
+            track.age += 1
             unmatched_track_ids.remove(track_id)
             unmatched_detection_indexes.remove(detection_index)
 
@@ -107,9 +109,10 @@ class CentroidTracker:
 
 
 class LineCrossingCounter:
-    def __init__(self, line: CountLine | None = None) -> None:
+    def __init__(self, line: CountLine | None = None, min_track_age: int = 3) -> None:
         self.line = line or CountLine()
         self.total = 0
+        self.min_track_age = min_track_age
 
     def reset(self) -> None:
         self.total = 0
@@ -127,6 +130,8 @@ class LineCrossingCounter:
 
         for track in tracks:
             if track.counted or track.previous_centroid is None:
+                continue
+            if track.age < self.min_track_age:
                 continue
 
             previous_side = self.line.side(track.previous_centroid, frame_width, frame_height)
