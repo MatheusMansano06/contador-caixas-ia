@@ -66,7 +66,18 @@ class SessionStore:
                 """
                 UPDATE counting_sessions
                 SET ended_at = ?, total = ?, status = 'finished'
-                WHERE id = ?
+                WHERE id = ? AND ended_at IS NULL
+                """,
+                (now_iso(), total, session_id),
+            )
+
+    def fail_session(self, session_id: int, total: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE counting_sessions
+                SET ended_at = ?, total = ?, status = 'failed'
+                WHERE id = ? AND ended_at IS NULL
                 """,
                 (now_iso(), total, session_id),
             )

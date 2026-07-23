@@ -37,6 +37,22 @@ No painel, use:
 - `1`, `2` etc. para outras webcams locais;
 - URL RTSP para camera IP, por exemplo `rtsp://usuario:senha@ip:554/caminho`.
 
+## Fluxo mobile mais simples
+
+No celular, o fluxo recomendado agora e:
+
+1. abrir `/index-mobile.html`;
+2. tocar em `Iniciar`;
+3. tocar em `Definir area` e arrastar sobre a zona de contagem;
+4. deixar a area vazia e tocar em `Recalibrar`;
+5. colocar as caixas e acompanhar `Total`, `Objetos` e `Visiveis`.
+
+Se quiser acompanhar em outra tela, o monitor continua disponivel em:
+
+```text
+/monitor.html
+```
+
 ## Observacao sobre IA
 
 O detector atual e propositalmente simples. Ele serve para iniciar a validacao ao vivo, testar fluxo de camera, tracking, linha virtual, contador e historico.
@@ -73,6 +89,7 @@ Este arquivo nao deve ser commitado.
 Para instalar dependencias de teste:
 
 ```bash
+pip install -r 04_backend_api_contagem/requirements.txt
 pip install -r 04_backend_api_contagem/requirements-dev.txt
 pytest 09_testes_validacao
 ```

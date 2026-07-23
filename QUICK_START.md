@@ -31,7 +31,10 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 **Opção 1: Rede Local (Rápido)**
 1. Descubra o IP da sua máquina: `ipconfig` (Windows) ou `ifconfig` (Linux/Mac)
 2. No celular (mesma rede), acesse: `http://SEU_IP:8000/index-mobile.html`
-3. Clique em "Iniciar" para capturar câmera
+3. Clique em `Iniciar`
+4. Clique em `Definir area` e arraste sobre a zona onde as caixas aparecem
+5. Deixe a área vazia e clique em `Recalibrar`
+6. Comece a colocar as caixas e acompanhe o total na tela
 
 **Opção 2: Tunnel HTTPS (Necessário se quiser getUserMedia)**
 ```bash
@@ -46,6 +49,7 @@ ngrok http 8000
 ```
 http://localhost:8000         # Painel desktop clássico (webcam servidor)
 http://localhost:8000/index-mobile.html  # Painel mobile (câmera do cliente)
+http://localhost:8000/monitor.html  # Monitor opcional em outra tela
 ```
 
 ## 📌 Endpoints da API

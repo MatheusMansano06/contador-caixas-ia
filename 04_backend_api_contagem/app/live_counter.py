@@ -37,6 +37,10 @@ class LiveCounterService:
             "frame_height": None,
             "detections": 0,
             "tracks": 0,
+            "visible": 0,
+            "stable": False,
+            "calibrating": False,
+            "zone_active": False,
             "error": None,
         }
 
@@ -60,6 +64,10 @@ class LiveCounterService:
                     "fps": 0.0,
                     "detections": 0,
                     "tracks": 0,
+                    "visible": 0,
+                    "stable": False,
+                    "calibrating": False,
+                    "zone_active": False,
                     "error": None,
                 }
             )
@@ -98,6 +106,7 @@ class LiveCounterService:
                 self._tracker.tracks.clear()
             self._zone.reset_total()
             self._status["total"] = 0
+            self._status["visible"] = 0
             session_id = self._status["session_id"]
             if session_id is not None:
                 self.store.update_total(int(session_id), 0)
@@ -107,17 +116,27 @@ class LiveCounterService:
         with self._lock:
             self._zone.set_roi(x1, y1, x2, y2)
             self._status["total"] = 0
+            self._status["visible"] = 0
+            self._status["zone_active"] = True
+            self._status["stable"] = False
+            self._status["calibrating"] = True
             return self.status()
 
     def clear_zone(self) -> dict[str, Any]:
         with self._lock:
             self._zone.clear()
             self._status["total"] = 0
+            self._status["visible"] = 0
+            self._status["zone_active"] = False
+            self._status["stable"] = False
+            self._status["calibrating"] = False
             return self.status()
 
     def recalibrate_zone(self) -> dict[str, Any]:
         with self._lock:
             self._zone.recalibrate()
+            self._status["stable"] = False
+            self._status["calibrating"] = True
             return self.status()
 
     def cycle_rotation(self) -> dict[str, Any]:
@@ -125,6 +144,8 @@ class LiveCounterService:
             self._rotation = (self._rotation + 90) % 360
             # A imagem mudou de orientacao: a area/fundo precisam recalibrar.
             self._zone.recalibrate()
+            self._status["stable"] = False
+            self._status["calibrating"] = True
             return self.status()
 
     def status(self) -> dict[str, Any]:
@@ -170,6 +191,8 @@ class LiveCounterService:
                     _, encoded = cv2.imencode(".jpg", overlay, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
                     count = int(result["count"])
                     visible = int(result.get("visible", 0))
+                    stable = bool(result.get("stable", False))
+                    calibrating = bool(result.get("calibrating", False))
                     with self._lock:
                         self._last_jpeg = encoded.tobytes()
                         prev_total = self._status["total"]
@@ -181,12 +204,23 @@ class LiveCounterService:
                                 "frame_height": frame_height,
                                 "detections": len(result.get("boxes", [])),
                                 "tracks": len(result.get("boxes", [])),
+                                "stable": stable,
+                                "calibrating": calibrating,
+                                "zone_active": True,
                             }
                         )
                     if session_id is not None and count != prev_total:
                         self.store.update_total(session_id, count)
-                    return {"total": count, "visible": visible, "tracks": len(result.get("boxes", [])),
-                            "frame_width": frame_width, "frame_height": frame_height}
+                    return {
+                        "total": count,
+                        "visible": visible,
+                        "tracks": len(result.get("boxes", [])),
+                        "frame_width": frame_width,
+                        "frame_height": frame_height,
+                        "stable": stable,
+                        "calibrating": calibrating,
+                        "zone_active": True,
+                    }
 
             # Sem area definida: apenas transmite a imagem, sem contar nada.
             cv2.putText(
@@ -208,9 +242,20 @@ class LiveCounterService:
                         "frame_height": frame_height,
                         "detections": 0,
                         "tracks": 0,
+                        "stable": False,
+                        "calibrating": False,
+                        "zone_active": False,
                     }
                 )
-            return {"total": 0, "tracks": 0, "frame_width": frame_width, "frame_height": frame_height}
+            return {
+                "total": 0,
+                "tracks": 0,
+                "frame_width": frame_width,
+                "frame_height": frame_height,
+                "stable": False,
+                "calibrating": False,
+                "zone_active": False,
+            }
         except Exception as exc:
             return {"error": str(exc)}
 
@@ -233,8 +278,7 @@ class LiveCounterService:
                 ok, frame = capture.read()
                 if not ok:
                     self._set_error("Falha ao ler frame da camera.")
-                    time.sleep(0.2)
-                    continue
+                    break
 
                 frame_height, frame_width = frame.shape[:2]
                 with self._lock:
@@ -282,6 +326,9 @@ class LiveCounterService:
                             "frame_height": frame_height,
                             "detections": len(detections),
                             "tracks": len(tracks),
+                            "stable": False,
+                            "calibrating": False,
+                            "zone_active": False,
                             "error": None,
                         }
                     )
@@ -290,7 +337,12 @@ class LiveCounterService:
         finally:
             capture.release()
             with self._lock:
+                failed = self._status["error"] is not None
+                total = int(self._status["total"])
+                current_session_id = self._status["session_id"]
                 self._status["running"] = False
+            if current_session_id is not None and failed:
+                self.store.fail_session(int(current_session_id), total)
 
     def _set_error(self, message: str) -> None:
         with self._lock:

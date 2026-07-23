@@ -1,7 +1,7 @@
-fastapi==0.116.1
-uvicorn[standard]==0.35.0
-opencv-python==4.10.0.84
-numpy==1.26.4
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+opencv-python==5.0.0.93
+numpy==2.5.1
 
 # Deteccao por IA (Etapa 2 - vigia de area com YOLO). Puxa PyTorch (~2GB).
 # Instale apenas quando for usar a deteccao treinada: pip install ultralytics
