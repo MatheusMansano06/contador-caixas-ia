@@ -225,6 +225,11 @@ class ZoneMonitor:
             # O YOLO so CONFIRMA que a mancha e caixa (rejeita pessoa/sombra);
             # se o YOLO nao detectar nada (possivel falha), confia nas manchas.
             blobs_local = self._merged_blobs(mask)
+            # Caixas encostadas/empilhadas viram uma mancha so; a aresta escura
+            # entre elas (borda/sombra) racha o blob em sub-caixas. Usa o cinza
+            # NITIDO (sem o blur pesado) para nao apagar a costura de poucos px.
+            gray_sharp = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+            blobs_local = self._split_blobs_by_seams(blobs_local, mask, gray_sharp)
             blobs = [(x + px1, y + py1, w, h) for (x, y, w, h) in blobs_local]
 
             if self.detector is not None:
@@ -312,6 +317,78 @@ class ZoneMonitor:
         if self._last_mask is None:
             return None
         return self._merged_blobs(self._last_mask)
+
+    def _split_blobs_by_seams(
+        self,
+        blobs: list[tuple[int, int, int, int]],
+        mask,
+        gray,
+    ) -> list[tuple[int, int, int, int]]:
+        """Racha blobs fundidos onde ha uma aresta interna forte (linha escura).
+
+        Duas caixas encostadas/empilhadas deixam uma costura escura (borda/sombra)
+        entre elas; uma caixa unica e um retangulo de tom uniforme, SEM linha
+        interna. Para cada blob, procura linhas escuras que atravessam quase toda
+        a coluna/linha da mancha e corta ali. Sem linha atravessando -> segue 1
+        caixa (protege contra over-segmentation de caixa unica).
+
+        Recebe/retorna coords ROI-local. `mask` e `gray` sao da ROG inteira.
+        """
+        out: list[tuple[int, int, int, int]] = []
+        for (bx, by, bw, bh) in blobs:
+            sub_mask = mask[by:by + bh, bx:bx + bw]
+            sub_gray = gray[by:by + bh, bx:bx + bw]
+            fg = sub_mask > 0
+            if not fg.any():
+                out.append((bx, by, bw, bh))
+                continue
+            # "Escuro" e relativo ao corpo da caixa (mediana do primeiro plano).
+            # A costura (borda/sombra ~45) fica bem abaixo do corpo E abaixo do
+            # fundo — o limiar 0.5*corpo separa costura de fundo e de borda leve.
+            # NAO exige `& fg`: o blur derruba a costura para perto do fundo, entao
+            # ela vira um buraco na mascara; achamos a aresta no cinza nitido.
+            body = float(np.median(sub_gray[fg]))
+            dark = sub_gray < 0.5 * body
+
+            pieces = self._cut_at_seams(sub_mask, dark)
+            if len(pieces) <= 1:
+                out.append((bx, by, bw, bh))
+                continue
+            for (sx, sy, sw, sh) in pieces:
+                if sw < 12 or sh < 12:
+                    continue
+                out.append((bx + sx, by + sy, sw, sh))
+        return out
+
+    def _cut_at_seams(self, sub_mask, dark) -> list[tuple[int, int, int, int]]:
+        """Corta a mancha nas colunas/linhas onde a costura escura a atravessa.
+
+        Exige que a linha escura cubra >60% do primeiro plano naquela coluna/linha
+        para valer como corte — ruido pontual nao divide, so uma aresta real.
+        """
+        cv2 = require_cv2()
+        h, w = sub_mask.shape
+        if h == 0 or w == 0:
+            return []
+        # Fracao da coluna/linha coberta pela aresta escura. Uma costura real
+        # atravessa quase toda a extensao; ruido pontual nao -> nao divide.
+        col_frac = dark.sum(axis=0).astype(np.float32) / h
+        row_frac = dark.sum(axis=1).astype(np.float32) / w
+
+        seam_cols = col_frac > 0.6
+        seam_rows = row_frac > 0.6
+        if not seam_cols.any() and not seam_rows.any():
+            return []
+
+        cut = sub_mask.copy()
+        cut[:, seam_cols] = 0
+        cut[seam_rows, :] = 0
+
+        num, _labels, stats, _ = cv2.connectedComponentsWithStats(cut)
+        return [
+            (int(stats[i][0]), int(stats[i][1]), int(stats[i][2]), int(stats[i][3]))
+            for i in range(1, num)
+        ]
 
     def _detect_with_yolo(
         self, frame, roi_px: tuple[int, int, int, int]
