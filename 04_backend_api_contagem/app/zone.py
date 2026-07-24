@@ -59,8 +59,9 @@ class ZoneMonitor:
         self.stable_needed = stable_needed
         self.stable_frames = 0
         self.current_count = 0  # objetos visiveis agora (suavizado)
-        self.total_count = 0    # contagem ATUAL da area (segue o current, nao acumula)
-        self.baseline = 0
+        # Contagem de SESSAO: caixas colocadas desde a calibracao. Persiste — uma
+        # caixa que fica oculta atras de outra continua contada. So o reset zera.
+        self.total_count = 0
         self.boxes: list[tuple[int, int, int, int]] = []
         # Suavizacao: contagem reportada = valor mais frequente das ultimas leituras
         # estaveis. Impede que um frame ruim do detector faca o numero saltar.
@@ -68,6 +69,11 @@ class ZoneMonitor:
         self._recent_visible: list[int] = []
         self._last_mask = None      # mascara de diferenca do ultimo frame (ROI-local)
         self._last_roi_bgr = None   # recorte BGR da area no ultimo frame (p/ coleta)
+        # Estado da persistencia de sessao.
+        self._max_visible = 0       # maior contagem visivel confirmada
+        self._prev_area = 0.0       # pixels alterados no ultimo plato contabilizado
+        self._saw_motion = False    # houve movimento desde o ultimo plato
+        self._plateau_committed = True  # o plato atual ja foi contabilizado?
 
     @property
     def active(self) -> bool:
@@ -80,9 +86,8 @@ class ZoneMonitor:
         self.stable_frames = 0
         self.current_count = 0
         self.total_count = 0
-        self.baseline = 0
         self.boxes = []
-        self._recent_visible = []
+        self._reset_session()
 
     def clear(self) -> None:
         self.roi = None
@@ -90,24 +95,29 @@ class ZoneMonitor:
         self.prev_gray = None
         self.current_count = 0
         self.total_count = 0
-        self.baseline = 0
         self.boxes = []
-        self._recent_visible = []
         self._last_mask = None
         self._last_roi_bgr = None
+        self._reset_session()
+
+    def _reset_session(self) -> None:
+        self._recent_visible = []
+        self._max_visible = 0
+        self._prev_area = 0.0
+        self._saw_motion = False
+        self._plateau_committed = True
 
     def reset_total(self) -> None:
         self.total_count = 0
         self.current_count = 0
-        self._recent_visible = []
+        self._reset_session()
 
     def recalibrate(self) -> None:
         """Marca para capturar novo fundo vazio no proximo frame."""
         self.background = None
         self.stable_frames = 0
         self.total_count = 0
-        self.baseline = 0
-        self._recent_visible = []
+        self._reset_session()
 
     def _roi_pixels(self, width: int, height: int) -> tuple[int, int, int, int]:
         x1, y1, x2, y2 = self.roi  # type: ignore[misc]
@@ -187,6 +197,9 @@ class ZoneMonitor:
 
         if motion > self.motion_threshold:
             self.stable_frames = 0
+            self._saw_motion = True          # mexeram na area
+            self._plateau_committed = False  # o proximo plato precisa ser reavaliado
+            self._recent_visible = []        # nao mistura leituras de antes do movimento
         else:
             self.stable_frames += 1
 
@@ -224,15 +237,39 @@ class ZoneMonitor:
             else:
                 final_boxes = blobs
 
-            # Suaviza: reporta a contagem mais frequente das ultimas leituras estaveis.
+            # Suaviza a contagem VISIVEL: valor mais frequente das ultimas leituras.
             self._recent_visible.append(len(final_boxes))
             if len(self._recent_visible) > self._smooth_window:
                 self._recent_visible.pop(0)
-            stabilized = _most_common(self._recent_visible)
-
-            self.current_count = stabilized
-            self.total_count = stabilized  # contagem ATUAL (nao acumula tremor)
+            visible = _most_common(self._recent_visible)
+            self.current_count = visible
             self.boxes = final_boxes
+
+            # So contabiliza a SESSAO quando o plato firmou (janela cheia e uniforme)
+            # e ainda nao foi contado — evita contar em dobro durante a suavizacao.
+            settled = (
+                len(self._recent_visible) == self._smooth_window
+                and len(set(self._recent_visible)) == 1
+            )
+            if settled and not self._plateau_committed:
+                changed_area = float(np.count_nonzero(mask))
+                if visible > self._max_visible:
+                    # Caixas novas visiveis -> soma a diferenca.
+                    self.total_count += visible - self._max_visible
+                    self._max_visible = visible
+                elif (
+                    self._saw_motion
+                    and changed_area > self._prev_area * 1.25
+                    and changed_area > 0
+                ):
+                    # Mexeram na area e o volume ocupado cresceu, mas o visivel nao
+                    # subiu: uma caixa foi colocada OCULTANDO outra -> conta +1.
+                    self.total_count += 1
+                    self._max_visible = max(self._max_visible, visible)
+                # Queda no visivel (oclusao/remocao) NAO desconta: so o reset zera.
+                self._prev_area = changed_area
+                self._saw_motion = False
+                self._plateau_committed = True
 
         return {
             "count": self.total_count,
