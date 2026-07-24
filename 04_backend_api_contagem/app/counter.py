@@ -23,9 +23,20 @@ class Track:
     track_id: int
     centroid: tuple[int, int]
     previous_centroid: tuple[int, int] | None = None
+    velocity: tuple[float, float] = (0.0, 0.0)
     missed_frames: int = 0
     counted: bool = False
     age: int = 0
+
+    def predicted_centroid(self) -> tuple[int, int]:
+        """Onde o objeto deve estar no proximo frame, dado seu movimento atual.
+
+        Ajuda a casar deteccoes quando o objeto se move rapido ou some por 1-2 frames.
+        """
+        return (
+            int(self.centroid[0] + self.velocity[0]),
+            int(self.centroid[1] + self.velocity[1]),
+        )
 
 
 @dataclass(frozen=True)
@@ -71,10 +82,12 @@ class CentroidTracker:
         assignments: list[tuple[float, int, int]] = []
 
         for track_id, track in self.tracks.items():
+            # Casa contra a posicao PREVISTA (nao a ultima vista): tolera movimento rapido.
+            pred_x, pred_y = track.predicted_centroid()
             for index, detection in enumerate(detections):
                 distance = hypot(
-                    track.centroid[0] - detection.centroid[0],
-                    track.centroid[1] - detection.centroid[1],
+                    pred_x - detection.centroid[0],
+                    pred_y - detection.centroid[1],
                 )
                 if distance <= self.max_distance:
                     assignments.append((distance, track_id, index))
@@ -84,8 +97,13 @@ class CentroidTracker:
                 continue
 
             track = self.tracks[track_id]
+            new_centroid = detections[detection_index].centroid
+            # Velocidade suavizada (media com a anterior) reduz tremor de deteccao.
+            vx = 0.6 * (new_centroid[0] - track.centroid[0]) + 0.4 * track.velocity[0]
+            vy = 0.6 * (new_centroid[1] - track.centroid[1]) + 0.4 * track.velocity[1]
+            track.velocity = (vx, vy)
             track.previous_centroid = track.centroid
-            track.centroid = detections[detection_index].centroid
+            track.centroid = new_centroid
             track.missed_frames = 0
             track.age += 1
             unmatched_track_ids.remove(track_id)
@@ -109,10 +127,18 @@ class CentroidTracker:
 
 
 class LineCrossingCounter:
-    def __init__(self, line: CountLine | None = None, min_track_age: int = 3) -> None:
+    def __init__(
+        self,
+        line: CountLine | None = None,
+        min_track_age: int = 3,
+        min_travel: float = 6.0,
+    ) -> None:
         self.line = line or CountLine()
         self.total = 0
         self.min_track_age = min_track_age
+        # Movimento minimo (px) entre frames para validar o cruzamento.
+        # Evita contar caixa parada tremulando sobre a linha.
+        self.min_travel = min_travel
 
     def reset(self) -> None:
         self.total = 0
@@ -132,6 +158,13 @@ class LineCrossingCounter:
             if track.counted or track.previous_centroid is None:
                 continue
             if track.age < self.min_track_age:
+                continue
+
+            traveled = hypot(
+                track.centroid[0] - track.previous_centroid[0],
+                track.centroid[1] - track.previous_centroid[1],
+            )
+            if traveled < self.min_travel:
                 continue
 
             previous_side = self.line.side(track.previous_centroid, frame_width, frame_height)

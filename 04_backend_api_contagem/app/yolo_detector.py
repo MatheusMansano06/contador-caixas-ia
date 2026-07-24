@@ -19,8 +19,19 @@ class YoloDetector:
     3. Modelo COCO generico (fallback).
     """
 
-    def __init__(self, conf: float = 0.25) -> None:
-        self.conf = conf
+    def __init__(
+        self,
+        conf: float = 0.35,
+        iou: float = 0.45,
+        min_conf: float = 0.40,
+        max_aspect_ratio: float = 4.0,
+        min_area_ratio: float = 0.0008,
+    ) -> None:
+        self.conf = conf              # confianca minima do YOLO no predict
+        self.iou = iou               # NMS: funde deteccoes sobrepostas
+        self.min_conf = min_conf     # descarte pos-predict de deteccoes fracas
+        self.max_aspect_ratio = max_aspect_ratio  # caixa: proporcao sensata
+        self.min_area_ratio = min_area_ratio      # ignora ruido minusculo
         self._model = None
         self._kind: str | None = None
         self._names: dict[int, str] = {}
@@ -72,12 +83,25 @@ class YoloDetector:
                 self._model = None
                 return False
 
+    # Classes que nunca sao caixa/produto (ignoradas mesmo se o modelo COCO detectar).
+    _IGNORE_LABELS = {"person", "cat", "dog", "bird", "chair", "tvmonitor", "tv"}
+
     def detect(self, frame) -> list[dict[str, Any]]:
-        """Retorna [{x,y,w,h,label,conf}] dos objetos detectados (ignora pessoas)."""
+        """Retorna [{x,y,w,h,label,conf}] dos objetos detectados e filtrados.
+
+        Filtros aplicados apos o predict:
+        - descarta classes que nao sao objeto contavel (pessoa, animal...);
+        - descarta confianca < min_conf;
+        - descarta proporcao (aspect ratio) fora do esperado para caixa;
+        - descarta area minuscula (ruido).
+        """
         if self._model is None and not self.load():
             return []
 
-        results = self._model.predict(frame, conf=self.conf, verbose=False)
+        h_frame, w_frame = frame.shape[:2]
+        min_area = self.min_area_ratio * (w_frame * h_frame)
+
+        results = self._model.predict(frame, conf=self.conf, iou=self.iou, verbose=False)
         out: list[dict[str, Any]] = []
         for r in results:
             boxes = getattr(r, "boxes", None)
@@ -86,17 +110,35 @@ class YoloDetector:
             for b in boxes:
                 cls = int(b.cls[0]) if b.cls is not None else -1
                 label = self._names.get(cls, str(cls))
-                if label == "person":
+                if label in self._IGNORE_LABELS:
+                    continue
+                conf = float(b.conf[0]) if b.conf is not None else 0.0
+                if conf < self.min_conf:
                     continue
                 x1, y1, x2, y2 = (float(v) for v in b.xyxy[0].tolist())
+                w, h = int(x2 - x1), int(y2 - y1)
+                if w <= 0 or h <= 0:
+                    continue
+                if (w * h) < min_area:
+                    continue
+                aspect = max(w, h) / min(w, h)
+                if aspect > self.max_aspect_ratio:
+                    continue
                 out.append(
-                    {
-                        "x": int(x1),
-                        "y": int(y1),
-                        "w": int(x2 - x1),
-                        "h": int(y2 - y1),
-                        "label": label,
-                        "conf": float(b.conf[0]) if b.conf is not None else 0.0,
-                    }
+                    {"x": int(x1), "y": int(y1), "w": w, "h": h, "label": label, "conf": conf}
                 )
         return out
+
+    def detect_in_roi(
+        self, frame, roi_px: tuple[int, int, int, int]
+    ) -> list[dict[str, Any]]:
+        """Detecta apenas dentro da ROI (area vigiada), devolvendo coords no frame inteiro."""
+        px1, py1, px2, py2 = roi_px
+        if px2 - px1 < 8 or py2 - py1 < 8:
+            return []
+        crop = frame[py1:py2, px1:px2]
+        dets = self.detect(crop)
+        for d in dets:  # desloca de volta para o sistema de coordenadas do frame
+            d["x"] += px1
+            d["y"] += py1
+        return dets

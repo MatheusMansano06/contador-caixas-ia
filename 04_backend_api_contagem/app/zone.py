@@ -23,7 +23,12 @@ class ZoneMonitor:
         diff_threshold: int = 30,
         motion_threshold: float = 3.5,
         stable_needed: int = 6,
+        detector: Any | None = None,
     ) -> None:
+        # detector: YoloDetector opcional. Quando presente e carregado, a contagem
+        # usa reconhecimento real de objeto (caixa/produto) em vez de so blob de pixel.
+        self.detector = detector
+        self.detector_active = False  # vira True quando o YOLO carrega de fato
         self.roi: tuple[float, float, float, float] | None = None
         self.background = None  # grayscale borrado da area vazia
         self.prev_gray = None
@@ -138,6 +143,7 @@ class ZoneMonitor:
                 "roi_px": (px1, py1, px2, py2),
                 "stable": False,
                 "calibrating": True,
+                "detector": "yolo" if self.detector_active else "movimento",
             }
 
         # Detecta instabilidade (movimento) comparando frame atual com o anterior.
@@ -165,13 +171,20 @@ class ZoneMonitor:
         stable = self.stable_frames >= self.stable_needed
         # So confirma a contagem quando a cena esta estavel (sem gente/mao mexendo).
         if stable:
-            visible = len(boxes)
+            # Identificacao forte: se o YOLO estiver disponivel, ele decide o que e
+            # caixa/produto de verdade (menos falso positivo por sombra/objeto alheio).
+            # O blob de fundo continua como gatilho: so vale a pena rodar YOLO se algo
+            # foi de fato deixado na area.
+            yolo_boxes = self._detect_with_yolo(frame, (px1, py1, px2, py2)) if boxes else None
+            final_boxes = yolo_boxes if yolo_boxes is not None else boxes
+
+            visible = len(final_boxes)
             # Cada caixa nova colocada soma ao total; empilhar/tapar nao desconta.
             if visible > self.baseline:
                 self.total_count += visible - self.baseline
             self.baseline = visible
             self.current_count = visible
-            self.boxes = boxes
+            self.boxes = final_boxes
 
         return {
             "count": self.total_count,
@@ -180,7 +193,25 @@ class ZoneMonitor:
             "roi_px": (px1, py1, px2, py2),
             "stable": stable,
             "calibrating": False,
+            "detector": "yolo" if self.detector_active else "movimento",
         }
+
+    def _detect_with_yolo(
+        self, frame, roi_px: tuple[int, int, int, int]
+    ) -> list[tuple[int, int, int, int]] | None:
+        """Roda YOLO na ROI. Retorna caixas (x,y,w,h) ou None se indisponivel/erro."""
+        if self.detector is None:
+            return None
+        try:
+            if not self.detector_active:
+                if not self.detector.load():
+                    self.detector = None  # falhou: nao tenta de novo
+                    return None
+                self.detector_active = True
+            dets = self.detector.detect_in_roi(frame, roi_px)
+            return [(d["x"], d["y"], d["w"], d["h"]) for d in dets]
+        except Exception:
+            return None  # qualquer falha: cai no fallback de movimento
 
 
 def draw_zone_overlay(frame, result: dict[str, Any]):

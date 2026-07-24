@@ -1,0 +1,78 @@
+"""Testes das melhorias de identificacao/contagem em producao."""
+from pathlib import Path
+import sys
+
+import numpy as np
+
+
+BACKEND_DIR = Path(__file__).resolve().parents[1] / "04_backend_api_contagem"
+sys.path.insert(0, str(BACKEND_DIR))
+
+from app.counter import CentroidTracker, CountLine, Detection, LineCrossingCounter, Track  # noqa: E402
+from app.database import SessionStore  # noqa: E402
+from app.live_counter import LiveCounterService  # noqa: E402
+from app.zone import ZoneMonitor  # noqa: E402
+
+
+# --- Tracker: previsao de velocidade -------------------------------------
+
+def test_track_prediz_proxima_posicao_pela_velocidade() -> None:
+    t = Track(track_id=1, centroid=(100, 50), velocity=(10.0, -4.0))
+    assert t.predicted_centroid() == (110, 46)
+
+
+def test_tracker_mantem_id_com_objeto_em_movimento_rapido() -> None:
+    tracker = CentroidTracker(max_distance=40.0)
+    # Frame 1: objeto em (10,10)
+    tracker.update([Detection(x=5, y=5, width=10, height=10, area=100)])
+    # Frame 2: anda +30px -> cria velocidade
+    tracker.update([Detection(x=35, y=5, width=10, height=10, area=100)])
+    tid = next(iter(tracker.tracks))
+    # Frame 3: anda +30px de novo. Distancia crua (30) < max, mas a previsao
+    # deve casar com folga, mantendo o MESMO id (sem criar track novo).
+    tracker.update([Detection(x=65, y=5, width=10, height=10, area=100)])
+    assert len(tracker.tracks) == 1
+    assert tid in tracker.tracks
+
+
+# --- Contagem: guarda anti-tremor ----------------------------------------
+
+def test_caixa_tremendo_sobre_a_linha_nao_conta() -> None:
+    counter = LineCrossingCounter(CountLine(x1=0.0, y1=0.5, x2=1.0, y2=0.5), min_travel=6.0)
+    # Cruza a linha (49->51) mas move so 2px: e tremor, nao passagem.
+    track = Track(track_id=1, previous_centroid=(50, 49), centroid=(50, 51), age=5)
+    events = counter.collect_events([track], frame_width=100, frame_height=100)
+    assert counter.total == 0
+    assert events == []
+
+
+def test_passagem_real_ainda_conta_com_guarda_ativa() -> None:
+    counter = LineCrossingCounter(CountLine(x1=0.0, y1=0.5, x2=1.0, y2=0.5), min_travel=6.0)
+    track = Track(track_id=1, previous_centroid=(50, 40), centroid=(50, 60), age=5)
+    events = counter.collect_events([track], frame_width=100, frame_height=100)
+    assert counter.total == 1
+    assert len(events) == 1
+
+
+# --- Config em tempo real -------------------------------------------------
+
+def test_config_atualiza_e_limita_valores(tmp_path: Path) -> None:
+    svc = LiveCounterService(store=SessionStore(db_path=tmp_path / "t.db"))
+    out = svc.set_config({"yolo": {"conf": 0.5}, "line": {"min_travel": 12}})
+    assert out["yolo"]["conf"] == 0.5
+    assert out["line"]["min_travel"] == 12.0
+    # Clamp: valores fora do intervalo sao limitados, nao aceitos crus.
+    assert svc.set_config({"yolo": {"conf": 9}})["yolo"]["conf"] == 0.95
+    assert svc.set_config({"yolo": {"conf": -1}})["yolo"]["conf"] == 0.01
+
+
+# --- Zone: fallback sem detector -----------------------------------------
+
+def test_zone_sem_detector_usa_movimento() -> None:
+    zone = ZoneMonitor(detector=None)
+    zone.set_roi(0.1, 0.1, 0.9, 0.9)
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    result = zone.process(frame)  # primeiro frame: aprende fundo
+    assert result is not None
+    assert result["detector"] == "movimento"
+    assert result["calibrating"] is True

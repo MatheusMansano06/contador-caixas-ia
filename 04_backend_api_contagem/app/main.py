@@ -120,6 +120,23 @@ def set_line(payload: LineRequest) -> dict:
     return service.set_line(line)
 
 
+@app.get("/api/config")
+def get_config() -> dict:
+    return service.get_config()
+
+
+@app.post("/api/config")
+def set_config(payload: dict) -> dict:
+    """Ajusta thresholds de deteccao/contagem em tempo real.
+
+    Corpo (todas as chaves opcionais):
+      {"yolo": {"conf":.., "min_conf":.., "iou":.., "max_aspect_ratio":.., "min_area_ratio":..},
+       "zone": {"diff_threshold":.., "motion_threshold":.., "stable_needed":.., "min_area_ratio":..},
+       "line": {"min_travel":..}}
+    """
+    return service.set_config(payload)
+
+
 @app.get("/api/sessions")
 def sessions(limit: int = 20) -> list[dict]:
     return store.list_sessions(limit=limit)
@@ -165,17 +182,22 @@ def test_yolo(conf: float = 0.15):
     """Roda a IA no ultimo frame cru e retorna a imagem anotada + contagem."""
     from fastapi.responses import Response
     import cv2
-    from .yolo_detector import YoloDetector
 
     raw = service._last_raw
     if raw is None:
         raise HTTPException(status_code=404, detail="Sem frame. Inicie a camera no celular.")
 
     frame = raw.copy()
-    det = YoloDetector(conf=conf)
-    if not det.load():
-        raise HTTPException(status_code=500, detail="IA nao carregou")
-    boxes = det.detect(frame)
+    # Usa o detector compartilhado (mesma config de producao); conf pode ser sobreposta.
+    det = service._yolo
+    saved_conf = det.conf
+    det.conf = conf
+    try:
+        if not det.load():
+            raise HTTPException(status_code=500, detail="IA nao carregou")
+        boxes = det.detect(frame)
+    finally:
+        det.conf = saved_conf
     for b in boxes:
         cv2.rectangle(frame, (b["x"], b["y"]), (b["x"] + b["w"], b["y"] + b["h"]), (0, 220, 255), 3)
         cv2.putText(frame, f"{b['label']} {b['conf']:.2f}", (b["x"], max(20, b["y"] - 8)),

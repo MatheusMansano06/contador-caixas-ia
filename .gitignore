@@ -20,6 +20,9 @@ venv/
 # Saidas de treino Ultralytics
 runs/
 
+# Previews de teste do modelo
+09_testes_validacao/saidas/
+
 # Ferramentas e temporarios
 ngrok.exe
 *.log

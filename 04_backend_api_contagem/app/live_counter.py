@@ -7,9 +7,10 @@ from typing import Any
 
 import numpy as np
 
-from .counter import CentroidTracker, CountLine, LineCrossingCounter
+from .counter import CentroidTracker, CountLine, Detection, LineCrossingCounter
 from .database import SessionStore
 from .vision import MotionBoxDetector, draw_overlay, require_cv2
+from .yolo_detector import YoloDetector
 from .zone import ZoneMonitor, draw_zone_overlay
 
 
@@ -25,7 +26,10 @@ class LiveCounterService:
         self._detector: MotionBoxDetector | None = None
         self._tracker: CentroidTracker | None = None
         self._counter: LineCrossingCounter | None = None
-        self._zone = ZoneMonitor()
+        # Detector de IA compartilhado (carrega o modelo uma unica vez, sob demanda).
+        self._yolo = YoloDetector()
+        self._zone = ZoneMonitor(detector=self._yolo)
+        self._line_min_travel = 6.0  # ajustavel via /api/config
         self._rotation = 0  # 0, 90, 180, 270
         self._status: dict[str, Any] = {
             "running": False,
@@ -41,6 +45,7 @@ class LiveCounterService:
             "stable": False,
             "calibrating": False,
             "zone_active": False,
+            "detector": "movimento",
             "error": None,
         }
 
@@ -152,6 +157,57 @@ class LiveCounterService:
         with self._lock:
             return {**self._status, "line": asdict(self.line), "rotation": self._rotation}
 
+    def get_config(self) -> dict[str, Any]:
+        """Parametros ajustaveis de deteccao/contagem (para o painel)."""
+        with self._lock:
+            return {
+                "yolo": {
+                    "conf": self._yolo.conf,
+                    "min_conf": self._yolo.min_conf,
+                    "iou": self._yolo.iou,
+                    "max_aspect_ratio": self._yolo.max_aspect_ratio,
+                    "min_area_ratio": self._yolo.min_area_ratio,
+                    "model": self._yolo.kind,
+                },
+                "zone": {
+                    "diff_threshold": self._zone.diff_threshold,
+                    "motion_threshold": self._zone.motion_threshold,
+                    "stable_needed": self._zone.stable_needed,
+                    "min_area_ratio": self._zone.min_area_ratio,
+                },
+                "line": {"min_travel": self._line_min_travel},
+            }
+
+    def set_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Atualiza thresholds em tempo real. Ignora chaves ausentes/invalidas."""
+        with self._lock:
+            y = payload.get("yolo") or {}
+            if "conf" in y:
+                self._yolo.conf = max(0.01, min(0.95, float(y["conf"])))
+            if "min_conf" in y:
+                self._yolo.min_conf = max(0.01, min(0.99, float(y["min_conf"])))
+            if "iou" in y:
+                self._yolo.iou = max(0.1, min(0.9, float(y["iou"])))
+            if "max_aspect_ratio" in y:
+                self._yolo.max_aspect_ratio = max(1.0, min(20.0, float(y["max_aspect_ratio"])))
+            if "min_area_ratio" in y:
+                self._yolo.min_area_ratio = max(0.0, min(0.5, float(y["min_area_ratio"])))
+
+            z = payload.get("zone") or {}
+            if "diff_threshold" in z:
+                self._zone.diff_threshold = int(max(1, min(255, int(z["diff_threshold"]))))
+            if "motion_threshold" in z:
+                self._zone.motion_threshold = max(0.1, min(50.0, float(z["motion_threshold"])))
+            if "stable_needed" in z:
+                self._zone.stable_needed = int(max(1, min(60, int(z["stable_needed"]))))
+            if "min_area_ratio" in z:
+                self._zone.min_area_ratio = max(0.0, min(0.5, float(z["min_area_ratio"])))
+
+            ln = payload.get("line") or {}
+            if "min_travel" in ln:
+                self._line_min_travel = max(0.0, min(200.0, float(ln["min_travel"])))
+        return self.get_config()
+
     def snapshot(self) -> bytes | None:
         with self._lock:
             return self._last_jpeg
@@ -193,6 +249,7 @@ class LiveCounterService:
                     visible = int(result.get("visible", 0))
                     stable = bool(result.get("stable", False))
                     calibrating = bool(result.get("calibrating", False))
+                    detector_kind = result.get("detector", "movimento")
                     with self._lock:
                         self._last_jpeg = encoded.tobytes()
                         prev_total = self._status["total"]
@@ -207,6 +264,7 @@ class LiveCounterService:
                                 "stable": stable,
                                 "calibrating": calibrating,
                                 "zone_active": True,
+                                "detector": detector_kind,
                             }
                         )
                     if session_id is not None and count != prev_total:
@@ -220,6 +278,7 @@ class LiveCounterService:
                         "stable": stable,
                         "calibrating": calibrating,
                         "zone_active": True,
+                        "detector": detector_kind,
                     }
 
             # Sem area definida: apenas transmite a imagem, sem contar nada.
@@ -265,7 +324,7 @@ class LiveCounterService:
         capture = cv2.VideoCapture(capture_source)
         detector = MotionBoxDetector()
         tracker = CentroidTracker()
-        counter = LineCrossingCounter(self.line)
+        counter = LineCrossingCounter(self.line, min_travel=self._line_min_travel)
         last_tick = time.monotonic()
         frames = 0
 
@@ -273,6 +332,10 @@ class LiveCounterService:
             if not capture.isOpened():
                 self._set_error(f"Nao foi possivel abrir a camera: {source}")
                 return
+
+            # So carrega o modelo (pesado) depois de confirmar que a camera abriu.
+            # Prefere YOLO (reconhece caixa de verdade); cai para movimento se indisponivel.
+            use_yolo = self._yolo.load()
 
             while not self._stop_event.is_set():
                 ok, frame = capture.read()
@@ -284,7 +347,19 @@ class LiveCounterService:
                 with self._lock:
                     counter.update_line(self.line)
 
-                detections = detector.detect(frame)
+                if use_yolo:
+                    try:
+                        raw = self._yolo.detect(frame)
+                        detections = [
+                            Detection(x=d["x"], y=d["y"], width=d["w"], height=d["h"],
+                                      area=float(d["w"] * d["h"]))
+                            for d in raw
+                        ]
+                    except Exception:
+                        use_yolo = False  # falha em runtime: volta pro movimento
+                        detections = detector.detect(frame)
+                else:
+                    detections = detector.detect(frame)
                 tracks = tracker.update(detections)
                 events = counter.collect_events(tracks, frame_width, frame_height)
 
