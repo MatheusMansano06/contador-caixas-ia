@@ -236,16 +236,12 @@ def test_caixa_colada_na_borda_esquerda():
     assert res["count"] == 1, res
 
 
-@pytest.mark.xfail(reason="objeto pequeno cruzando area grande gera mean-absdiff abaixo de "
-                          "motion_threshold; o guarda de movimento nao dispara, a cena e "
-                          "tratada como estavel e o transiente e contado como caixa fantasma")
-def test_objeto_pequeno_cruzando_e_contado_como_fantasma():
-    """META: objeto pequeno atravessando a ROI grande NAO deveria contar.
+def test_objeto_pequeno_cruzando_nao_conta():
+    """Objeto pequeno atravessando a ROI grande NAO conta. (OK apos correcao)
 
-    Limitacao conhecida: o movimento e medido pela media do absdiff sobre TODA
-    a area; um objeto pequeno (ex.: mao, empilhadeira ao fundo) desloca poucos
-    pixels em relacao ao total e fica sob o limiar, sendo confirmado como caixa.
-    ROI mais justa em torno da zona de deposito reduz esse falso positivo.
+    O movimento passou a ser medido pela FRACAO de pixels alterados (nao pela
+    media): um objeto pequeno em movimento ultrapassa o limiar e a cena e
+    tratada como instavel enquanto ele cruza -> nao vira caixa fantasma.
     """
     z = _new_zone()
     _calibrate_empty(z)

@@ -42,7 +42,7 @@ class ZoneMonitor:
         self,
         min_area_ratio: float = 0.015,
         diff_threshold: int = 30,
-        motion_threshold: float = 3.5,
+        motion_threshold: float = 1.0,  # % de pixels que mudaram para valer como movimento
         stable_needed: int = 6,
         detector: Any | None = None,
     ) -> None:
@@ -190,9 +190,14 @@ class ZoneMonitor:
             }
 
         # Detecta instabilidade (movimento) comparando frame atual com o anterior.
+        # Mede a FRACAO de pixels que mudaram (nao a media de intensidade): a media
+        # dilui um objeto pequeno numa area grande e o guarda de movimento falhava
+        # (objeto pequeno cruzando virava caixa fantasma). A fracao capta qualquer
+        # deslocamento local, grande ou pequeno.
         motion = 0.0
         if self.prev_gray is not None and self.prev_gray.shape == gray.shape:
-            motion = float(np.mean(cv2.absdiff(gray, self.prev_gray)))
+            diff = cv2.absdiff(gray, self.prev_gray)
+            motion = 100.0 * float(np.count_nonzero(diff > 20)) / float(diff.size)
         self.prev_gray = gray
 
         if motion > self.motion_threshold:
