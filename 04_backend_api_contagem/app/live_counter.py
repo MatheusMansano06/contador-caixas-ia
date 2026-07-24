@@ -172,6 +172,7 @@ class LiveCounterService:
                     "iou": self._yolo.iou,
                     "max_aspect_ratio": self._yolo.max_aspect_ratio,
                     "min_area_ratio": self._yolo.min_area_ratio,
+                    "merge_overlap": self._yolo.merge_overlap,
                     "model": self._yolo.kind,
                 },
                 "zone": {
@@ -198,6 +199,8 @@ class LiveCounterService:
                 self._yolo.max_aspect_ratio = max(1.0, min(20.0, float(y["max_aspect_ratio"])))
             if "min_area_ratio" in y:
                 self._yolo.min_area_ratio = max(0.0, min(0.5, float(y["min_area_ratio"])))
+            if "merge_overlap" in y:
+                self._yolo.merge_overlap = max(0.1, min(0.95, float(y["merge_overlap"])))
 
             z = payload.get("zone") or {}
             if "diff_threshold" in z:

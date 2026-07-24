@@ -10,6 +10,44 @@ MODELS_DIR = REPO_ROOT / "05_ia_visao_computacional" / "modelos"
 DEFAULT_VOCAB = ["box", "cardboard box", "carton", "package", "parcel", "product"]
 
 
+def _merge_overlapping(dets: list[dict[str, Any]], thresh: float) -> list[dict[str, Any]]:
+    """Funde deteccoes que se sobrepoem fortemente (faces da MESMA caixa fisica).
+
+    Criterio: intersecao / area do menor bbox >= thresh -> mesmo objeto (vira a
+    uniao dos dois). Caixas vizinhas apenas encostadas tem sobreposicao pequena
+    em relacao a area e NAO sao fundidas.
+    """
+    boxes = [dict(d) for d in dets]
+    changed = True
+    while changed:
+        changed = False
+        out: list[dict[str, Any]] = []
+        while boxes:
+            a = boxes.pop(0)
+            i = 0
+            while i < len(boxes):
+                b = boxes[i]
+                ix1, iy1 = max(a["x"], b["x"]), max(a["y"], b["y"])
+                ix2 = min(a["x"] + a["w"], b["x"] + b["w"])
+                iy2 = min(a["y"] + a["h"], b["y"] + b["h"])
+                inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                smaller = min(a["w"] * a["h"], b["w"] * b["h"])
+                if smaller > 0 and inter / smaller >= thresh:
+                    x1, y1 = min(a["x"], b["x"]), min(a["y"], b["y"])
+                    x2 = max(a["x"] + a["w"], b["x"] + b["w"])
+                    y2 = max(a["y"] + a["h"], b["y"] + b["h"])
+                    label = a["label"] if a["conf"] >= b["conf"] else b["label"]
+                    a = {"x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1,
+                         "label": label, "conf": max(a["conf"], b["conf"])}
+                    boxes.pop(i)
+                    changed = True
+                else:
+                    i += 1
+            out.append(a)
+        boxes = out
+    return boxes
+
+
 class YoloDetector:
     """Detector de objetos por IA (Ultralytics YOLO).
 
@@ -26,7 +64,9 @@ class YoloDetector:
         min_conf: float = 0.55,   # so aceita deteccao confiante (corta falso positivo)
         max_aspect_ratio: float = 4.0,
         min_area_ratio: float = 0.0008,
+        merge_overlap: float = 0.60,  # funde deteccoes da mesma caixa fisica
     ) -> None:
+        self.merge_overlap = merge_overlap
         self.conf = conf              # confianca minima do YOLO no predict
         self.iou = iou               # NMS: funde deteccoes sobrepostas
         self.min_conf = min_conf     # descarte pos-predict de deteccoes fracas
@@ -127,7 +167,8 @@ class YoloDetector:
                 out.append(
                     {"x": int(x1), "y": int(y1), "w": w, "h": h, "label": label, "conf": conf}
                 )
-        return out
+        # Uma caixa 3D real pode disparar varias deteccoes (cada face). Funde.
+        return _merge_overlapping(out, self.merge_overlap)
 
     def detect_in_roi(
         self, frame, roi_px: tuple[int, int, int, int]

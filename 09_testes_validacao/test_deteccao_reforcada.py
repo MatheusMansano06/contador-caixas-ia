@@ -11,7 +11,28 @@ sys.path.insert(0, str(BACKEND_DIR))
 from app.counter import CentroidTracker, CountLine, Detection, LineCrossingCounter, Track  # noqa: E402
 from app.database import SessionStore  # noqa: E402
 from app.live_counter import LiveCounterService  # noqa: E402
+from app.yolo_detector import _merge_overlapping  # noqa: E402
 from app.zone import ZoneMonitor  # noqa: E402
+
+
+# --- Fusao de deteccoes da mesma caixa fisica ------------------------------
+
+def test_faces_da_mesma_caixa_sao_fundidas_em_uma() -> None:
+    dets = [
+        {"x": 0, "y": 0, "w": 100, "h": 100, "label": "caixa", "conf": 0.9},
+        {"x": 10, "y": 10, "w": 40, "h": 40, "label": "caixa", "conf": 0.7},   # face interna
+        {"x": 200, "y": 0, "w": 50, "h": 50, "label": "caixa", "conf": 0.8},   # outra caixa
+    ]
+    merged = _merge_overlapping(dets, 0.6)
+    assert len(merged) == 2
+
+
+def test_caixas_vizinhas_encostadas_nao_sao_fundidas() -> None:
+    dets = [
+        {"x": 0, "y": 0, "w": 100, "h": 100, "label": "caixa", "conf": 0.9},
+        {"x": 95, "y": 0, "w": 100, "h": 100, "label": "caixa", "conf": 0.9},  # 5px de encosto
+    ]
+    assert len(_merge_overlapping(dets, 0.6)) == 2
 
 
 # --- Tracker: previsao de velocidade -------------------------------------
