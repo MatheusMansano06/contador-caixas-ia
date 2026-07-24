@@ -28,3 +28,6 @@ ngrok.exe
 *.log
 *.tmp
 Thumbs.db
+
+# Worktrees de subagentes (efemeros)
+.claude/worktrees/
