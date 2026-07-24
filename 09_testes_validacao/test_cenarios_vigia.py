@@ -116,24 +116,35 @@ def test_remover_caixa_zera_contagem_visivel():
 
 # --- cenarios DIFICEIS (metas; podem falhar no baseline) -------------------
 
+def _seam_v(frame: np.ndarray, x: int, y1: int, y2: int) -> None:
+    """Aresta/sombra vertical entre duas caixas encostadas (como no real)."""
+    frame[y1:y2, x - 2:x + 2] = 45
+
+
+def _seam_h(frame: np.ndarray, y: int, x1: int, x2: int) -> None:
+    frame[y - 2:y + 2, x1:x2] = 45
+
+
 def test_duas_grudadas():
-    """Duas caixas encostadas devem contar 2 (meta dificil p/ blob puro)."""
+    """Duas caixas encostadas (com aresta entre elas) devem contar 2."""
     z = _new_zone()
     _calibrate_empty(z)
     f = _bg_frame()
     _put_box(f, 180, 180, 320, 320)
     _put_box(f, 320, 180, 460, 320)   # encostada na anterior
+    _seam_v(f, 320, 180, 320)         # crease/sombra visivel entre elas
     res = _settle(z, f)
     assert res["count"] == 2, res
 
 
 def test_empilhada_uma_sobre_a_outra():
-    """Uma caixa sobre a outra deve contar 2 (meta dificil)."""
+    """Uma caixa sobre a outra (com aresta horizontal) deve contar 2."""
     z = _new_zone()
     _calibrate_empty(z)
     f = _bg_frame()
     _put_box(f, 240, 240, 420, 360)   # base
     _put_box(f, 260, 120, 400, 240)   # em cima
+    _seam_h(f, 240, 260, 400)         # aresta entre as duas
     res = _settle(z, f)
     assert res["count"] == 2, res
 
