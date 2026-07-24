@@ -180,7 +180,6 @@ class LiveCounterService:
                     "motion_threshold": self._zone.motion_threshold,
                     "stable_needed": self._zone.stable_needed,
                     "min_area_ratio": self._zone.min_area_ratio,
-                    "mask_overlap": self._zone.mask_overlap,
                 },
                 "line": {"min_travel": self._line_min_travel},
             }
@@ -211,8 +210,6 @@ class LiveCounterService:
                 self._zone.stable_needed = int(max(1, min(60, int(z["stable_needed"]))))
             if "min_area_ratio" in z:
                 self._zone.min_area_ratio = max(0.0, min(0.5, float(z["min_area_ratio"])))
-            if "mask_overlap" in z:
-                self._zone.mask_overlap = max(0.0, min(0.95, float(z["mask_overlap"])))
 
             ln = payload.get("line") or {}
             if "min_travel" in ln:

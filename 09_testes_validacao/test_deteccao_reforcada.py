@@ -89,15 +89,30 @@ def test_config_atualiza_e_limita_valores(tmp_path: Path) -> None:
 
 # --- Zone: fallback sem detector -----------------------------------------
 
-def test_zone_fusao_descarta_deteccao_fora_da_mudanca_de_fundo() -> None:
-    """Deteccao do YOLO em regiao identica ao fundo vazio (parede/grafite) nao conta."""
+def test_uma_caixa_vira_uma_mancha_unica() -> None:
+    """Fragmentos da mesma caixa (fita/costura) viram 1 bloco fisico apos dilatacao."""
     zone = ZoneMonitor()
-    mask = np.zeros((100, 100), dtype=np.uint8)
-    mask[20:60, 20:60] = 255  # so aqui algo foi deixado na area
-    dets = [(25, 25, 30, 30),   # sobre a mudanca -> mantem
-            (70, 70, 25, 25)]   # sobre o fundo calibrado -> descarta
-    kept = zone._filter_by_mask(dets, mask, 0, 0)
-    assert kept == [(25, 25, 30, 30)]
+    mask = np.zeros((200, 200), dtype=np.uint8)
+    mask[40:90, 40:150] = 255   # corpo da caixa
+    mask[92:140, 60:130] = 255  # face de baixo, com pequeno vao (seam)
+    blobs = zone._merged_blobs(mask)
+    assert len(blobs) == 1
+
+
+def test_duas_caixas_separadas_sao_dois_blocos() -> None:
+    zone = ZoneMonitor()
+    mask = np.zeros((200, 300), dtype=np.uint8)
+    mask[40:120, 20:90] = 255     # caixa 1
+    mask[40:120, 200:270] = 255   # caixa 2 (bem separada)
+    assert len(zone._merged_blobs(mask)) == 2
+
+
+def test_mancha_so_conta_se_yolo_confirmar() -> None:
+    """_overlaps_any confirma que a mancha fisica coincide com uma caixa do YOLO."""
+    from app.zone import _overlaps_any
+    blob = (50, 50, 40, 40)
+    assert _overlaps_any(blob, [(60, 60, 30, 30)]) is True   # sobrepoe caixa
+    assert _overlaps_any(blob, [(200, 200, 20, 20)]) is False  # sombra longe, sem caixa
 
 
 def test_zone_sem_detector_usa_movimento() -> None:

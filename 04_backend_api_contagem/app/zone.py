@@ -17,6 +17,17 @@ def _most_common(values: list[int]) -> int:
     return max(v for v, c in counts.items() if c == top)
 
 
+def _overlaps_any(box: tuple[int, int, int, int], others: list[tuple[int, int, int, int]]) -> bool:
+    """True se `box` intersecta qualquer bbox em `others` (confirma que a mancha e caixa)."""
+    x, y, w, h = box
+    for (ox, oy, ow, oh) in others:
+        ix = max(0, min(x + w, ox + ow) - max(x, ox))
+        iy = max(0, min(y + h, oy + oh) - max(y, oy))
+        if ix > 0 and iy > 0:
+            return True
+    return False
+
+
 class ZoneMonitor:
     """Vigia uma area (ROI) e conta quantos objetos estao deixados/parados nela agora.
 
@@ -55,10 +66,6 @@ class ZoneMonitor:
         # estaveis. Impede que um frame ruim do detector faca o numero saltar.
         self._smooth_window = 7
         self._recent_visible: list[int] = []
-        # Fusao com o fundo: uma deteccao do YOLO so vale se cobrir uma regiao que
-        # MUDOU em relacao a area vazia calibrada. Mata falso positivo em parede,
-        # grafite, moveis e reflexos (que fazem parte do fundo).
-        self.mask_overlap = 0.20
         self._last_mask = None      # mascara de diferenca do ultimo frame (ROI-local)
         self._last_roi_bgr = None   # recorte BGR da area no ultimo frame (p/ coleta)
 
@@ -199,17 +206,23 @@ class ZoneMonitor:
         stable = self.stable_frames >= self.stable_needed
         # So conta quando a cena esta estavel (sem gente/mao mexendo).
         if stable:
-            # Identificacao forte: com o YOLO disponivel, ELE decide o que e caixa
-            # dentro da area (roda sempre) — mas a deteccao so vale se cobrir uma
-            # regiao que mudou vs o fundo vazio (fusao mata falsos em parede/fundo).
+            # ESTRATEGIA (camera fixa + fundo vazio calibrado):
+            # a CONTAGEM vem das manchas fisicas (o que foi deixado na area) —
+            # 1 objeto solido = 1 mancha conectada, robusto a caixa 3D.
+            # O YOLO so CONFIRMA que a mancha e caixa (rejeita pessoa/sombra);
+            # se o YOLO nao detectar nada (possivel falha), confia nas manchas.
+            blobs_local = self._merged_blobs(mask)
+            blobs = [(x + px1, y + py1, w, h) for (x, y, w, h) in blobs_local]
+
             if self.detector is not None:
-                yolo_boxes = self._detect_with_yolo(frame, (px1, py1, px2, py2))
-                if yolo_boxes is not None:
-                    final_boxes = self._filter_by_mask(yolo_boxes, mask, px1, py1)
+                yolo_boxes = self._detect_with_yolo(frame, (px1, py1, px2, py2)) or []
+                if yolo_boxes:
+                    confirmed = [b for b in blobs if _overlaps_any(b, yolo_boxes)]
+                    final_boxes = confirmed if confirmed else blobs
                 else:
-                    final_boxes = boxes
+                    final_boxes = blobs
             else:
-                final_boxes = boxes
+                final_boxes = blobs
 
             # Suaviza: reporta a contagem mais frequente das ultimas leituras estaveis.
             self._recent_visible.append(len(final_boxes))
@@ -231,48 +244,21 @@ class ZoneMonitor:
             "detector": "yolo" if self.detector_active else "movimento",
         }
 
-    def _filter_by_mask(
-        self,
-        dets: list[tuple[int, int, int, int]],
-        mask,
-        ox: int,
-        oy: int,
-    ) -> list[tuple[int, int, int, int]]:
-        """Mantem so deteccoes cujo bbox cobre regiao que mudou vs o fundo vazio."""
-        if self.mask_overlap <= 0 or mask is None:
-            return dets
-        mh, mw = mask.shape[:2]
-        kept: list[tuple[int, int, int, int]] = []
-        for (x, y, w, h) in dets:
-            lx1, ly1 = max(0, x - ox), max(0, y - oy)
-            lx2, ly2 = min(mw, x - ox + w), min(mh, y - oy + h)
-            if lx2 <= lx1 or ly2 <= ly1:
-                continue
-            sub = mask[ly1:ly2, lx1:lx2]
-            coverage = float(np.count_nonzero(sub)) / float((lx2 - lx1) * (ly2 - ly1))
-            if coverage >= self.mask_overlap:
-                kept.append((x, y, w, h))
-        return kept
+    def _merged_blobs(self, mask) -> list[tuple[int, int, int, int]]:
+        """Manchas fisicas na area (ROI-local), fundindo fragmentos da mesma caixa.
 
-    def label_blobs(self) -> list[tuple[int, int, int, int]] | None:
-        """Blocos fisicos deixados na area (ROI-local), fundindo fragmentos.
-
-        Usa a diferenca com o fundo vazio + dilatacao para juntar pedacos da mesma
-        caixa. Serve de rotulo automatico na coleta de dataset real.
+        Dilata a mascara de diferenca para juntar pedacos (fita, costura, sombra
+        colada) num unico bloco, depois aperta o bbox de volta na mascara real.
         """
-        if self._last_mask is None:
-            return None
         cv2 = require_cv2()
-        mask = self._last_mask
         big = cv2.dilate(mask, np.ones((25, 25), np.uint8))
-        num, labels_img, stats, _ = cv2.connectedComponentsWithStats(big)
+        num, _labels, stats, _ = cv2.connectedComponentsWithStats(big)
         total_px = mask.shape[0] * mask.shape[1]
         out: list[tuple[int, int, int, int]] = []
         for i in range(1, num):
             x, y, w, h, area = (int(v) for v in stats[i])
             if area < 0.005 * total_px:
                 continue
-            # Aperta o bbox de volta na mascara original (remove a folga da dilatacao).
             sub = mask[y:y + h, x:x + w]
             ys, xs = np.nonzero(sub)
             if xs.size == 0:
@@ -283,6 +269,12 @@ class ZoneMonitor:
                 continue
             out.append((tx1, ty1, tx2 - tx1, ty2 - ty1))
         return out
+
+    def label_blobs(self) -> list[tuple[int, int, int, int]] | None:
+        """Blocos fisicos (ROI-local) para rotulo automatico na coleta de dataset."""
+        if self._last_mask is None:
+            return None
+        return self._merged_blobs(self._last_mask)
 
     def _detect_with_yolo(
         self, frame, roi_px: tuple[int, int, int, int]
