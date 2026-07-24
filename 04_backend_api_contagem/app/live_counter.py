@@ -3,9 +3,14 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+# Dataset real coletado da propria camera (caminho ASCII: cv2/ultralytics
+# falham com acento no Windows).
+REAL_DATASET_DIR = Path.home() / ".contador_caixas_ia" / "datasets" / "caixas_reais"
 
 from .counter import CentroidTracker, CountLine, Detection, LineCrossingCounter
 from .database import SessionStore
@@ -174,6 +179,7 @@ class LiveCounterService:
                     "motion_threshold": self._zone.motion_threshold,
                     "stable_needed": self._zone.stable_needed,
                     "min_area_ratio": self._zone.min_area_ratio,
+                    "mask_overlap": self._zone.mask_overlap,
                 },
                 "line": {"min_travel": self._line_min_travel},
             }
@@ -202,11 +208,69 @@ class LiveCounterService:
                 self._zone.stable_needed = int(max(1, min(60, int(z["stable_needed"]))))
             if "min_area_ratio" in z:
                 self._zone.min_area_ratio = max(0.0, min(0.5, float(z["min_area_ratio"])))
+            if "mask_overlap" in z:
+                self._zone.mask_overlap = max(0.0, min(0.95, float(z["mask_overlap"])))
 
             ln = payload.get("line") or {}
             if "min_travel" in ln:
                 self._line_min_travel = max(0.0, min(200.0, float(ln["min_travel"])))
         return self.get_config()
+
+    def capture_sample(self, kind: str = "caixas", expected: int | None = None) -> dict[str, Any]:
+        """Salva uma amostra real (recorte da area + rotulos) para retreinar a IA.
+
+        kind "vazio": area sem caixas -> exemplo negativo (ensina o fundo).
+        kind "caixas": area com caixas -> rotulos automaticos vindos dos blocos
+        fisicos (diferenca com o fundo vazio). Se `expected` for informado, so
+        salva quando a quantidade de blocos bate (controle de qualidade).
+        """
+        cv2 = require_cv2()
+        with self._lock:
+            if not self._zone.active:
+                return {"error": "Defina a area de contagem antes de coletar."}
+            crop = None if self._zone._last_roi_bgr is None else self._zone._last_roi_bgr.copy()
+            blobs = self._zone.label_blobs() or []
+            stable = bool(self._status.get("stable"))
+
+        if crop is None:
+            return {"error": "Sem frame processado ainda. Inicie a camera."}
+
+        if kind == "vazio":
+            if blobs:
+                return {"error": f"A area nao parece vazia ({len(blobs)} bloco(s)). Esvazie ou recalibre."}
+            labels: list[tuple[int, int, int, int]] = []
+        else:
+            if not stable:
+                return {"error": "Aguarde a cena estabilizar antes de capturar."}
+            if not blobs:
+                return {"error": "Nenhum objeto novo na area. O fundo foi calibrado com as caixas dentro?"}
+            if expected is not None and len(blobs) != expected:
+                return {"error": f"Detectei {len(blobs)} bloco(s), esperado {expected}. Reposicione e tente de novo."}
+            labels = blobs
+
+        h, w = crop.shape[:2]
+        existing = 0
+        for split in ("train", "val"):
+            d = REAL_DATASET_DIR / "images" / split
+            if d.exists():
+                existing += len(list(d.glob("*.jpg")))
+        split = "val" if existing % 5 == 4 else "train"  # ~20% para validacao
+        img_dir = REAL_DATASET_DIR / "images" / split
+        lbl_dir = REAL_DATASET_DIR / "labels" / split
+        img_dir.mkdir(parents=True, exist_ok=True)
+        lbl_dir.mkdir(parents=True, exist_ok=True)
+
+        stem = f"real_{existing:05d}"
+        ok, buf = cv2.imencode(".jpg", crop)
+        if not ok:
+            return {"error": "Falha ao codificar o frame."}
+        (img_dir / f"{stem}.jpg").write_bytes(buf.tobytes())
+        lines = [
+            f"0 {(x + bw / 2) / w:.6f} {(y + bh / 2) / h:.6f} {bw / w:.6f} {bh / h:.6f}"
+            for (x, y, bw, bh) in labels
+        ]
+        (lbl_dir / f"{stem}.txt").write_text("\n".join(lines), encoding="utf-8")
+        return {"saved": stem, "split": split, "caixas_rotuladas": len(labels), "total_amostras": existing + 1}
 
     def snapshot(self) -> bytes | None:
         with self._lock:

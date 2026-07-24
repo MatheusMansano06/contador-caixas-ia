@@ -68,6 +68,17 @@ def test_config_atualiza_e_limita_valores(tmp_path: Path) -> None:
 
 # --- Zone: fallback sem detector -----------------------------------------
 
+def test_zone_fusao_descarta_deteccao_fora_da_mudanca_de_fundo() -> None:
+    """Deteccao do YOLO em regiao identica ao fundo vazio (parede/grafite) nao conta."""
+    zone = ZoneMonitor()
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[20:60, 20:60] = 255  # so aqui algo foi deixado na area
+    dets = [(25, 25, 30, 30),   # sobre a mudanca -> mantem
+            (70, 70, 25, 25)]   # sobre o fundo calibrado -> descarta
+    kept = zone._filter_by_mask(dets, mask, 0, 0)
+    assert kept == [(25, 25, 30, 30)]
+
+
 def test_zone_sem_detector_usa_movimento() -> None:
     zone = ZoneMonitor(detector=None)
     zone.set_roi(0.1, 0.1, 0.9, 0.9)

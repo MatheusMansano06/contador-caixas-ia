@@ -125,6 +125,20 @@ def get_config() -> dict:
     return service.get_config()
 
 
+class CaptureRequest(BaseModel):
+    kind: str = "caixas"  # "vazio" ou "caixas"
+    expected: int | None = None
+
+
+@app.post("/api/dataset/capture")
+def dataset_capture(payload: CaptureRequest) -> dict:
+    """Captura uma amostra real da area vigiada para retreinar a IA."""
+    result = service.capture_sample(kind=payload.kind, expected=payload.expected)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
 @app.post("/api/config")
 def set_config(payload: dict) -> dict:
     """Ajusta thresholds de deteccao/contagem em tempo real.

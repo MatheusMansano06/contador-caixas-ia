@@ -21,9 +21,11 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-# Dataset em caminho ASCII (cv2.imread do ultralytics falha com acento no Windows).
+# Datasets em caminho ASCII (cv2.imread do ultralytics falha com acento no Windows).
 DATASET_DIR = Path.home() / ".contador_caixas_ia" / "datasets" / "caixas_sinteticas"
+REAL_DIR = Path.home() / ".contador_caixas_ia" / "datasets" / "caixas_reais"
 DATA_YAML = DATASET_DIR / "data.yaml"
+MERGED_YAML = Path.home() / ".contador_caixas_ia" / "data_treino.yaml"
 MODELS_DIR = REPO_ROOT / "05_ia_visao_computacional" / "modelos"
 # Runs tambem em ASCII para evitar problemas de escrita/leitura do ultralytics.
 RUNS_DIR = Path.home() / ".contador_caixas_ia" / "runs"
@@ -42,6 +44,37 @@ def _ensure_dataset(train: int, val: int) -> None:
     )
 
 
+def _write_merged_yaml() -> Path:
+    """Junta sintetico + real (se houver) num data.yaml unico.
+
+    O dataset real (fotos da propria camera) vale ouro: ensina o modelo a NAO
+    disparar no fundo do cliente (parede, grafite, moveis) e a reconhecer as
+    caixas reais. E repetido 3x na lista para pesar mais que o sintetico.
+    """
+    train_dirs = [(DATASET_DIR / "images" / "train").as_posix()]
+    val_dirs = [(DATASET_DIR / "images" / "val").as_posix()]
+
+    real_train = REAL_DIR / "images" / "train"
+    real_val = REAL_DIR / "images" / "val"
+    n_real = len(list(real_train.glob("*.jpg"))) if real_train.exists() else 0
+    if n_real:
+        train_dirs += [real_train.as_posix()] * 3  # peso maior para o dominio real
+        if real_val.exists() and any(real_val.glob("*.jpg")):
+            val_dirs.append(real_val.as_posix())
+        print(f"Dataset real incluido: {n_real} imagem(ns) de treino (peso 3x).")
+    else:
+        print("Sem dataset real ainda (so sintetico). Colete com coletar_amostras.py.")
+
+    def _fmt(dirs: list[str]) -> str:
+        return "\n".join(f"  - {d}" for d in dirs)
+
+    MERGED_YAML.write_text(
+        f"train:\n{_fmt(train_dirs)}\nval:\n{_fmt(val_dirs)}\nnc: 1\nnames: ['caixa']\n",
+        encoding="utf-8",
+    )
+    return MERGED_YAML
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=30)
@@ -54,6 +87,7 @@ def main() -> None:
     args = ap.parse_args()
 
     _ensure_dataset(args.train_n, args.val_n)
+    data_yaml = _write_merged_yaml()
 
     try:
         from ultralytics import YOLO
@@ -63,7 +97,7 @@ def main() -> None:
 
     model = YOLO(args.base)
     results = model.train(
-        data=str(DATA_YAML),
+        data=str(data_yaml),
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=args.batch,

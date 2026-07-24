@@ -21,9 +21,9 @@ class YoloDetector:
 
     def __init__(
         self,
-        conf: float = 0.35,
-        iou: float = 0.45,
-        min_conf: float = 0.40,
+        conf: float = 0.40,
+        iou: float = 0.35,        # NMS mais forte: funde deteccoes sobrepostas na mesma caixa
+        min_conf: float = 0.55,   # so aceita deteccao confiante (corta falso positivo)
         max_aspect_ratio: float = 4.0,
         min_area_ratio: float = 0.0008,
     ) -> None:

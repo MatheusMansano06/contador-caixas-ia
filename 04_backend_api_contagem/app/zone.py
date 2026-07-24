@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 import numpy as np
 
 from .vision import require_cv2
+
+
+def _most_common(values: list[int]) -> int:
+    """Valor que mais aparece na janela (desempate: o maior). Suaviza tremor."""
+    if not values:
+        return 0
+    counts = Counter(values)
+    top = max(counts.values())
+    return max(v for v, c in counts.items() if c == top)
 
 
 class ZoneMonitor:
@@ -37,10 +47,20 @@ class ZoneMonitor:
         self.motion_threshold = motion_threshold
         self.stable_needed = stable_needed
         self.stable_frames = 0
-        self.current_count = 0  # objetos visiveis agora
-        self.total_count = 0    # acumulado: cada caixa colocada soma +1, nunca desconta
-        self.baseline = 0       # objetos visiveis na ultima cena estavel
+        self.current_count = 0  # objetos visiveis agora (suavizado)
+        self.total_count = 0    # contagem ATUAL da area (segue o current, nao acumula)
+        self.baseline = 0
         self.boxes: list[tuple[int, int, int, int]] = []
+        # Suavizacao: contagem reportada = valor mais frequente das ultimas leituras
+        # estaveis. Impede que um frame ruim do detector faca o numero saltar.
+        self._smooth_window = 7
+        self._recent_visible: list[int] = []
+        # Fusao com o fundo: uma deteccao do YOLO so vale se cobrir uma regiao que
+        # MUDOU em relacao a area vazia calibrada. Mata falso positivo em parede,
+        # grafite, moveis e reflexos (que fazem parte do fundo).
+        self.mask_overlap = 0.20
+        self._last_mask = None      # mascara de diferenca do ultimo frame (ROI-local)
+        self._last_roi_bgr = None   # recorte BGR da area no ultimo frame (p/ coleta)
 
     @property
     def active(self) -> bool:
@@ -55,6 +75,7 @@ class ZoneMonitor:
         self.total_count = 0
         self.baseline = 0
         self.boxes = []
+        self._recent_visible = []
 
     def clear(self) -> None:
         self.roi = None
@@ -64,10 +85,14 @@ class ZoneMonitor:
         self.total_count = 0
         self.baseline = 0
         self.boxes = []
+        self._recent_visible = []
+        self._last_mask = None
+        self._last_roi_bgr = None
 
     def reset_total(self) -> None:
         self.total_count = 0
-        self.baseline = self.current_count
+        self.current_count = 0
+        self._recent_visible = []
 
     def recalibrate(self) -> None:
         """Marca para capturar novo fundo vazio no proximo frame."""
@@ -75,6 +100,7 @@ class ZoneMonitor:
         self.stable_frames = 0
         self.total_count = 0
         self.baseline = 0
+        self._recent_visible = []
 
     def _roi_pixels(self, width: int, height: int) -> tuple[int, int, int, int]:
         x1, y1, x2, y2 = self.roi  # type: ignore[misc]
@@ -166,24 +192,33 @@ class ZoneMonitor:
         area_total = (px2 - px1) * (py2 - py1)
         min_area = self.min_area_ratio * area_total
         roi_bgr = frame[py1:py2, px1:px2]
+        self._last_mask = mask
+        self._last_roi_bgr = roi_bgr
         boxes = self._segment_objects(roi_bgr, mask, min_area, px1, py1)
 
         stable = self.stable_frames >= self.stable_needed
-        # So confirma a contagem quando a cena esta estavel (sem gente/mao mexendo).
+        # So conta quando a cena esta estavel (sem gente/mao mexendo).
         if stable:
-            # Identificacao forte: se o YOLO estiver disponivel, ele decide o que e
-            # caixa/produto de verdade (menos falso positivo por sombra/objeto alheio).
-            # O blob de fundo continua como gatilho: so vale a pena rodar YOLO se algo
-            # foi de fato deixado na area.
-            yolo_boxes = self._detect_with_yolo(frame, (px1, py1, px2, py2)) if boxes else None
-            final_boxes = yolo_boxes if yolo_boxes is not None else boxes
+            # Identificacao forte: com o YOLO disponivel, ELE decide o que e caixa
+            # dentro da area (roda sempre) — mas a deteccao so vale se cobrir uma
+            # regiao que mudou vs o fundo vazio (fusao mata falsos em parede/fundo).
+            if self.detector is not None:
+                yolo_boxes = self._detect_with_yolo(frame, (px1, py1, px2, py2))
+                if yolo_boxes is not None:
+                    final_boxes = self._filter_by_mask(yolo_boxes, mask, px1, py1)
+                else:
+                    final_boxes = boxes
+            else:
+                final_boxes = boxes
 
-            visible = len(final_boxes)
-            # Cada caixa nova colocada soma ao total; empilhar/tapar nao desconta.
-            if visible > self.baseline:
-                self.total_count += visible - self.baseline
-            self.baseline = visible
-            self.current_count = visible
+            # Suaviza: reporta a contagem mais frequente das ultimas leituras estaveis.
+            self._recent_visible.append(len(final_boxes))
+            if len(self._recent_visible) > self._smooth_window:
+                self._recent_visible.pop(0)
+            stabilized = _most_common(self._recent_visible)
+
+            self.current_count = stabilized
+            self.total_count = stabilized  # contagem ATUAL (nao acumula tremor)
             self.boxes = final_boxes
 
         return {
@@ -195,6 +230,59 @@ class ZoneMonitor:
             "calibrating": False,
             "detector": "yolo" if self.detector_active else "movimento",
         }
+
+    def _filter_by_mask(
+        self,
+        dets: list[tuple[int, int, int, int]],
+        mask,
+        ox: int,
+        oy: int,
+    ) -> list[tuple[int, int, int, int]]:
+        """Mantem so deteccoes cujo bbox cobre regiao que mudou vs o fundo vazio."""
+        if self.mask_overlap <= 0 or mask is None:
+            return dets
+        mh, mw = mask.shape[:2]
+        kept: list[tuple[int, int, int, int]] = []
+        for (x, y, w, h) in dets:
+            lx1, ly1 = max(0, x - ox), max(0, y - oy)
+            lx2, ly2 = min(mw, x - ox + w), min(mh, y - oy + h)
+            if lx2 <= lx1 or ly2 <= ly1:
+                continue
+            sub = mask[ly1:ly2, lx1:lx2]
+            coverage = float(np.count_nonzero(sub)) / float((lx2 - lx1) * (ly2 - ly1))
+            if coverage >= self.mask_overlap:
+                kept.append((x, y, w, h))
+        return kept
+
+    def label_blobs(self) -> list[tuple[int, int, int, int]] | None:
+        """Blocos fisicos deixados na area (ROI-local), fundindo fragmentos.
+
+        Usa a diferenca com o fundo vazio + dilatacao para juntar pedacos da mesma
+        caixa. Serve de rotulo automatico na coleta de dataset real.
+        """
+        if self._last_mask is None:
+            return None
+        cv2 = require_cv2()
+        mask = self._last_mask
+        big = cv2.dilate(mask, np.ones((25, 25), np.uint8))
+        num, labels_img, stats, _ = cv2.connectedComponentsWithStats(big)
+        total_px = mask.shape[0] * mask.shape[1]
+        out: list[tuple[int, int, int, int]] = []
+        for i in range(1, num):
+            x, y, w, h, area = (int(v) for v in stats[i])
+            if area < 0.005 * total_px:
+                continue
+            # Aperta o bbox de volta na mascara original (remove a folga da dilatacao).
+            sub = mask[y:y + h, x:x + w]
+            ys, xs = np.nonzero(sub)
+            if xs.size == 0:
+                continue
+            tx1, ty1 = x + int(xs.min()), y + int(ys.min())
+            tx2, ty2 = x + int(xs.max()), y + int(ys.max())
+            if tx2 - tx1 < 12 or ty2 - ty1 < 12:
+                continue
+            out.append((tx1, ty1, tx2 - tx1, ty2 - ty1))
+        return out
 
     def _detect_with_yolo(
         self, frame, roi_px: tuple[int, int, int, int]
